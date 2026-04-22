@@ -5,6 +5,7 @@ Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references
 Copyright(c) 2024 The D-FINE Authors. All Rights Reserved.
 """
 
+import os
 import faster_coco_eval
 import faster_coco_eval.core.mask as coco_mask
 import torch
@@ -33,6 +34,8 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
     def __init__(
         self, img_folder, ann_file, transforms, return_masks=False, remap_mscoco_category=False
     ):
+        img_folder = os.path.expanduser(img_folder)
+        ann_file = os.path.expanduser(ann_file)
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)

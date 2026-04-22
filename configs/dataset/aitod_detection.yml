@@ -11,8 +11,8 @@ train_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /lpai/dataset/sunwenzhang-backup/0-0-1/aitod/images/trainval
-    ann_file: /lpai/dataset/sunwenzhang-backup/0-0-1/aitod/annotations/aitodv2_trainval.json
+    img_folder: ~/Data/datasets/aitod/images/trainval
+    ann_file: ~/Data/datasets/aitod/annotations/aitodv2_trainval.json
     return_masks: False
     transforms:
       type: Compose
@@ -28,8 +28,8 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder:  /lpai/dataset/sunwenzhang-backup/0-0-1/aitod/images/test
-    ann_file: /lpai/dataset/sunwenzhang-backup/0-0-1/aitod/annotations/aitodv2_test.json
+    img_folder:  ~/Data/datasets/aitod/images/test
+    ann_file: ~/Data/datasets/aitod/annotations/aitodv2_test.json
     return_masks: False
     transforms:
       type: Compose
