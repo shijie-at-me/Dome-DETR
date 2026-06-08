@@ -25,7 +25,8 @@ from ..data import CocoEvaluator
 from ..misc import MetricLogger, SmoothedValue, dist_utils
 from ..optim import ModelEMA, Warmup
 
-SAVE_INTERMEDIATE_VISUALIZE_RESULT = os.environ.get('SAVE_INTERMEDIATE_VISUALIZE_RESULT', 'False') == 'True'
+SAVE_INTERMEDIATE_VISUALIZE_RESULT = os.environ.get('SAVE_INTERMEDIATE_VISUALIZE_RESULT', 'false').lower() == 'true'
+SAVE_TP_FP_ANALYSIS = os.environ.get('SAVE_TP_FP_ANALYSIS', 'false').lower() == 'true'
 
 def train_one_epoch(
     model: torch.nn.Module,
@@ -159,6 +160,7 @@ def evaluate(
     data_loader,
     coco_evaluator: CocoEvaluator,
     device,
+    output_dir=None,
 ):
     SAVE_TEST_VISUALIZE_RESULT = os.environ.get('SAVE_TEST_VISUALIZE_RESULT', 'False') == 'True'
     if SAVE_TEST_VISUALIZE_RESULT:
@@ -184,6 +186,7 @@ def evaluate(
         total_anchor_num = 0
 
     MAX_PENDING_TASKS = 256
+    predictions = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
         pending_futures = []
         
@@ -195,7 +198,8 @@ def evaluate(
             coco = data_loader.dataset.coco
             file_names = [coco.loadImgs(id)[0]['file_name'] for id in image_ids]
 
-            outputs = model(samples, targets=targets)
+            outputs = model(samples, targets=None)
+            criterion(outputs, targets)
             orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
             results = postprocessor(outputs, orig_target_sizes)
 
@@ -235,6 +239,22 @@ def evaluate(
             if coco_evaluator is not None:
                 coco_evaluator.update(res)
 
+            if SAVE_TP_FP_ANALYSIS:
+                coco_dt_existing = coco_evaluator.coco_eval['bbox'].cocoDt
+                if coco_dt_existing is None or len(coco_dt_existing.anns) == 0:
+                    raise RuntimeError(
+                        "coco_evaluator has no accumulated predictions. "
+                        "Make sure synchronize_between_processes() was called."
+                    )
+                for ann in coco_dt_existing.anns.values():
+                    predictions.append({
+                        "image_id": int(ann["image_id"]),
+                        "category_id": int(ann["category_id"]),
+                        "bbox": [float(x) for x in ann["bbox"]],
+                        "score": float(ann["score"]),
+                    })
+                print(f"[recovered] {len(predictions)} predictions from coco_evaluator")
+
             if model.encoder.use_defe:
                 # For defe Ample Rate calculation
                 pred_defe = outputs['batch_queries_num'][0]
@@ -261,6 +281,22 @@ def evaluate(
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
 
+        if SAVE_TP_FP_ANALYSIS:
+            # inference only DUMPS raw per-detection records; all analysis/plotting is
+            # done later by dedicated code on the saved file (mirrors the vfl_stats workflow).
+            raw = extract_tp_fp_raw(
+                coco_gt=coco_evaluator.coco_gt,
+                predictions=predictions,
+                iou_thr=0.5,
+                max_dets=500,
+            )
+            save_dir = str(output_dir) if output_dir is not None else "."
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, "tp_fp_raw.npz")
+            np.savez(save_path, **raw)
+            print(f"[tp_fp] saved {int(raw['det_score'].shape[0])} detections / "
+                  f"{int(raw['gt_area'].shape[0])} GTs -> {save_path}")
+
     stats = {}
     # stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     if coco_evaluator is not None:
@@ -278,3 +314,130 @@ def process_image_pair(args):
     result_img = visualize_detection(sample, result, f"result_{filename}", 
                                    scale_factor=scale_factor, return_image=True)
     concatenate_images(sample_img, result_img, output_path=f"visualize_all/{filename}")
+
+
+import numpy as np
+from collections import defaultdict
+
+def _box_iou_xywh(b1, b2):
+    """IoU between two xywh boxes."""
+    x1a, y1a, w1, h1 = b1
+    x1b, y1b, w2, h2 = b2
+    x2a, y2a = x1a + w1, y1a + h1
+    x2b, y2b = x1b + w2, y1b + h2
+    ix1, iy1 = max(x1a, x1b), max(y1a, y1b)
+    ix2, iy2 = min(x2a, x2b), min(y2a, y2b)
+    iw, ih = max(0., ix2 - ix1), max(0., iy2 - iy1)
+    inter = iw * ih
+    union = w1 * h1 + w2 * h2 - inter
+    return inter / union if union > 0 else 0.0
+
+
+def extract_tp_fp_raw(coco_gt, predictions, iou_thr=0.5, max_dets=500):
+    """COCO-style greedy TP/FP matching at a single IoU threshold, returning FLAT
+    per-detection records (NO size binning, NO plotting). Downstream analysis bins /
+    computes PR on the saved file, mirroring the vfl_stats workflow.
+
+    Matching, per (image, category): sort detections by score desc, take top `max_dets`,
+    greedily assign each to the highest-IoU unclaimed GT with IoU >= iou_thr.
+
+    Deviations from official COCOeval (fine for analysis, NOT a metric replacement):
+      * iscrowd GTs are skipped (no crowd-ignore logic);
+      * max_dets is applied per (image, category), not per image;
+      * a single IoU threshold (no .5:.95 averaging), stored in the output.
+
+    Coordinates: predictions and GT are both in ORIGINAL-image pixels (xywh), since the
+    postprocessor rescales boxes to orig_size -- so every `*_area` is original-image px^2
+    (the benchmark AP_S/AP_vt convention; this differs from vfl_stats' input space).
+
+    Returns equal-length per-detection arrays (`det_*`) plus a separate GT table (`gt_*`)
+    so recall and any size binning can be recomputed downstream.
+    """
+    if len(predictions) == 0:
+        raise RuntimeError("No predictions to analyze.")
+
+    preds_by_key = defaultdict(list)
+    for p in predictions:
+        preds_by_key[(p['image_id'], p['category_id'])].append(p)
+
+    gts_by_key = defaultdict(list)
+    for ann in coco_gt.anns.values():
+        if ann.get('iscrowd', 0):
+            continue
+        gts_by_key[(ann['image_id'], ann['category_id'])].append(ann)
+
+    valid_cats = set(coco_gt.getCatIds())
+    valid_imgs = set(coco_gt.getImgIds())
+
+    # per-detection record columns
+    d_img, d_cat, d_score = [], [], []
+    d_x, d_y, d_w, d_h = [], [], [], []
+    d_is_tp, d_iou, d_pred_area, d_match_gt_area = [], [], [], []
+    # matched-GT box (xywh, original-image px) for TPs -- enables exact AI-IoU
+    # (scaled-box) re-scoring downstream; nan for FPs.
+    d_mgt_x, d_mgt_y, d_mgt_w, d_mgt_h = [], [], [], []
+
+    # union of (img, cat): visit keys with GT and pred-only keys (which yield FPs)
+    all_keys = set(preds_by_key.keys()) | set(gts_by_key.keys())
+    for img_id, cat_id in all_keys:
+        if img_id not in valid_imgs or cat_id not in valid_cats:
+            continue
+        preds = sorted(preds_by_key.get((img_id, cat_id), []), key=lambda p: -p['score'])[:max_dets]
+        gts = gts_by_key.get((img_id, cat_id), [])
+        gt_matched = [False] * len(gts)
+
+        for p in preds:
+            bb = p['bbox']  # xywh, original-image px
+            best_iou, best_g = iou_thr, -1
+            for g_idx, gt in enumerate(gts):
+                if gt_matched[g_idx]:
+                    continue
+                iou = _box_iou_xywh(bb, gt['bbox'])
+                if iou >= best_iou:
+                    best_iou, best_g = iou, g_idx
+            is_tp = best_g >= 0
+            if is_tp:
+                gt_matched[best_g] = True
+            d_img.append(int(img_id)); d_cat.append(int(cat_id)); d_score.append(float(p['score']))
+            d_x.append(float(bb[0])); d_y.append(float(bb[1])); d_w.append(float(bb[2])); d_h.append(float(bb[3]))
+            d_is_tp.append(bool(is_tp))
+            d_iou.append(float(best_iou) if is_tp else 0.0)
+            d_pred_area.append(float(bb[2] * bb[3]))
+            d_match_gt_area.append(float(gts[best_g]['area']) if is_tp else float('nan'))
+            mgt = gts[best_g]['bbox'] if is_tp else (float('nan'),) * 4
+            d_mgt_x.append(float(mgt[0])); d_mgt_y.append(float(mgt[1]))
+            d_mgt_w.append(float(mgt[2])); d_mgt_h.append(float(mgt[3]))
+
+    # GT table (all non-crowd GTs in scope), for recall / size binning downstream
+    g_img, g_cat, g_area = [], [], []
+    for ann in coco_gt.anns.values():
+        if ann.get('iscrowd', 0):
+            continue
+        if ann['image_id'] not in valid_imgs or ann['category_id'] not in valid_cats:
+            continue
+        g_img.append(int(ann['image_id'])); g_cat.append(int(ann['category_id'])); g_area.append(float(ann['area']))
+
+    return {
+        'det_image_id': np.asarray(d_img, dtype=np.int64),
+        'det_category_id': np.asarray(d_cat, dtype=np.int64),
+        'det_score': np.asarray(d_score, dtype=np.float32),
+        'det_x': np.asarray(d_x, dtype=np.float32),
+        'det_y': np.asarray(d_y, dtype=np.float32),
+        'det_w': np.asarray(d_w, dtype=np.float32),
+        'det_h': np.asarray(d_h, dtype=np.float32),
+        'det_is_tp': np.asarray(d_is_tp, dtype=bool),
+        'det_iou': np.asarray(d_iou, dtype=np.float32),           # matched IoU (>= iou_thr) for TP, else 0
+        'det_pred_area': np.asarray(d_pred_area, dtype=np.float32),
+        'det_matched_gt_area': np.asarray(d_match_gt_area, dtype=np.float32),  # GT area for TP, else nan
+        'det_matched_gt_x': np.asarray(d_mgt_x, dtype=np.float32),  # matched GT box xywh for TP, else nan
+        'det_matched_gt_y': np.asarray(d_mgt_y, dtype=np.float32),
+        'det_matched_gt_w': np.asarray(d_mgt_w, dtype=np.float32),
+        'det_matched_gt_h': np.asarray(d_mgt_h, dtype=np.float32),
+        'gt_image_id': np.asarray(g_img, dtype=np.int64),
+        'gt_category_id': np.asarray(g_cat, dtype=np.int64),
+        'gt_area': np.asarray(g_area, dtype=np.float32),
+        'iou_thr': np.float32(iou_thr),
+        'max_dets': np.int64(max_dets),
+    }
+
+

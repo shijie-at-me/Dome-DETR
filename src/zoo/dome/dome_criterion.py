@@ -74,6 +74,28 @@ class DomeCriterion(nn.Module):
         self.mal_alpha = mal_alpha
         self.use_uni_set = use_uni_set
 
+        self._vfl_buffer = {
+            # 核心字段
+            "ious": [],
+            "l1": [],
+            "gious": [],
+            "scores": [],  # GT class 对应的预测分数
+            "max_scores": [],  # 最大预测分数
+            # GT box 几何信息
+            "areas": [],  # GT 面积
+            "widths": [],  # GT 宽
+            "heights": [],  # GT 高
+            "pred_areas": [],  # 预测框面积
+            # 训练信号
+            "residuals": [],  # score - IoU
+            # 类别信息
+            "target_classes": [],
+            "is_correct_class": [],  # 预测类别是否正确
+            # 位置信息
+            "batch_indices": [],
+        }
+        self.extract_vfl_stats = False
+
     def loss_labels_focal(self, outputs, targets, indices, num_boxes, batch_queries_num=None):
         assert "pred_logits" in outputs
         src_logits = outputs["pred_logits"]
@@ -107,6 +129,9 @@ class DomeCriterion(nn.Module):
             ious = torch.diag(ious).detach()
         else:
             ious = values
+
+        if self.extract_vfl_stats:
+            self.extract_vfl_stats_func(ious, outputs["pred_logits"], idx, targets, indices)
 
         src_logits = outputs["pred_logits"]
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
@@ -175,7 +200,6 @@ class DomeCriterion(nn.Module):
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
         return {'loss_mal': loss}
 
-
     def loss_boxes(self, outputs, targets, indices, num_boxes, boxes_weight=None, **kwargs):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
         targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
@@ -194,6 +218,10 @@ class DomeCriterion(nn.Module):
         )
         loss_giou = loss_giou if boxes_weight is None else loss_giou * boxes_weight
         losses["loss_giou"] = loss_giou.sum() / num_boxes
+
+        buf = self._vfl_buffer
+        buf["l1"].append(loss_bbox.cpu().float().numpy())
+        buf["gious"].append(loss_giou.cpu().float().numpy())
 
         return losses
 
@@ -291,7 +319,6 @@ class DomeCriterion(nn.Module):
 
         return losses
 
-
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -358,7 +385,7 @@ class DomeCriterion(nn.Module):
         self._clear_cache()
 
         # Get the matching union set across all decoder layers.
-        if "aux_outputs" in outputs:
+        if "aux_outputs" in outputs and self.training:
             indices_aux_list, cached_indices, cached_indices_enc = [], [], []
             for i, aux_outputs in enumerate(outputs["aux_outputs"] + [outputs["pre_outputs"]]):
                 indices_aux = self.matcher(aux_outputs, targets)["indices"]
@@ -378,7 +405,7 @@ class DomeCriterion(nn.Module):
                 torch.distributed.all_reduce(num_boxes_go)
             num_boxes_go = torch.clamp(num_boxes_go / get_world_size(), min=1).item()
         else:
-            assert "aux_outputs" in outputs, ""
+            assert not self.training, ""
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
@@ -393,7 +420,7 @@ class DomeCriterion(nn.Module):
         losses = {}
         for loss in self.losses:
             # TODO, indices and num_box are different from RT-DETRv2
-            use_uni_set = self.use_uni_set and (loss in ['boxes', 'local'])
+            use_uni_set = self.use_uni_set and (loss in ['boxes', 'local']) and self.training
             indices_in = indices_go if use_uni_set else indices
             num_boxes_in = num_boxes_go if use_uni_set else num_boxes
             meta = self.get_loss_meta_info(loss, outputs, targets, indices_in)
@@ -402,13 +429,13 @@ class DomeCriterion(nn.Module):
             losses.update(l_dict)
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
-        if 'aux_outputs' in outputs:
+        if 'aux_outputs' in outputs and self.training:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
                 if 'local' in self.losses:      # only work for local loss
                     aux_outputs['up'], aux_outputs['reg_scale'] = outputs['up'], outputs['reg_scale']
                 for loss in self.losses:
                     # TODO, indices and num_box are different from RT-DETRv2
-                    use_uni_set = self.use_uni_set and (loss in ['boxes', 'local'])
+                    use_uni_set = self.use_uni_set and (loss in ['boxes', 'local']) and self.training
                     indices_in = indices_go if use_uni_set else cached_indices[i]
                     num_boxes_in = num_boxes_go if use_uni_set else num_boxes
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_in)
@@ -419,11 +446,11 @@ class DomeCriterion(nn.Module):
                     losses.update(l_dict)
 
         # In case of auxiliary traditional head output at first decoder layer. just for dome
-        if 'pre_outputs' in outputs:
+        if 'pre_outputs' in outputs and self.training:
             aux_outputs = outputs['pre_outputs']
             for loss in self.losses:
                 # TODO, indices and num_box are different from RT-DETRv2
-                use_uni_set = self.use_uni_set and (loss in ['boxes', 'local'])
+                use_uni_set = self.use_uni_set and (loss in ['boxes', 'local']) and self.training
                 indices_in = indices_go if use_uni_set else cached_indices[-1]
                 num_boxes_in = num_boxes_go if use_uni_set else num_boxes
                 meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_in)
@@ -434,7 +461,7 @@ class DomeCriterion(nn.Module):
                 losses.update(l_dict)
 
         # In case of encoder auxiliary losses.
-        if 'enc_aux_outputs' in outputs:
+        if 'enc_aux_outputs' in outputs and self.training:
             assert 'enc_meta' in outputs, ''
             class_agnostic = outputs['enc_meta']['class_agnostic']
             if class_agnostic:
@@ -449,7 +476,7 @@ class DomeCriterion(nn.Module):
             for i, aux_outputs in enumerate(outputs['enc_aux_outputs']):
                 for loss in self.losses:
                     # TODO, indices and num_box are different from RT-DETRv2
-                    use_uni_set = self.use_uni_set and (loss == 'boxes')
+                    use_uni_set = self.use_uni_set and (loss == 'boxes') and self.training
                     indices_in = indices_go if use_uni_set else cached_indices_enc[i]
                     num_boxes_in = num_boxes_go if use_uni_set else num_boxes
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices_in)
@@ -462,7 +489,7 @@ class DomeCriterion(nn.Module):
                 self.num_classes = orig_num_classes
 
         # In case of cdn auxiliary losses.
-        if 'dn_outputs' in outputs:
+        if 'dn_outputs' in outputs and self.training:
             assert 'dn_meta' in outputs, ''
             indices_dn = self.get_cdn_matched_indices(outputs['dn_meta'], targets)
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
@@ -489,7 +516,7 @@ class DomeCriterion(nn.Module):
                     losses.update(l_dict)
 
         # In case of defe Category losses.
-        if "defe" in outputs:
+        if "defe" in outputs and self.training:
             # Calculate defe Regression Loss
             min_num_select = outputs["defe"]["min_num_select"]
             max_num_select = outputs["defe"]["max_num_select"]
@@ -617,3 +644,124 @@ class DomeCriterion(nn.Module):
         step = 0.5 / (num_layers - 1)
         opt_list = [0.5 + step * i for i in range(num_layers)] if num_layers > 1 else [1]
         return opt_list
+
+    def extract_vfl_stats_func(self, ious, pred_logits, idx, targets, indices):
+        """Harvest per-matched-positive diagnostics for the confidence-suppression study (E1).
+
+        COORDINATE-SYSTEM CONTRACT (critical for downstream size analysis):
+          * `widths`/`heights` are NORMALISED cx,cy,w,h box sides in [0,1] w.r.t. the
+            MODEL-INPUT image -- they are NOT pixels.
+          * `areas` (= target["area"]) is rescaled by the Resize transform, so it is in
+            MODEL-INPUT pixel^2. For the unresized case (e.g. AI-TOD) input == original.
+          * For an unambiguous, explicit size axis we additionally store per-pair input and
+            original image dims, plus pixel areas recomputed from the SAME normalised box:
+              - `area_in_px`   = (w*Win)*(h*Hin)   -> MECHANISM axis (size the detector sees;
+                                                      where the IoU geometry actually plays out)
+              - `area_orig_px` = (w*Worig)*(h*Horig) -> BENCHMARK axis (COCO/AI-TOD AP_S/AP_vt
+                                                      buckets are defined on original pixels)
+            These coincide when there is no (or isotropic) resize, and differ under the
+            anisotropic 800x800 resize used by VisDrone -- do NOT mix the two.
+          * `image_ids` are global COCO ids; the legacy `batch_indices` is per-batch-local
+            (0..bs-1, repeats every batch) and is kept only for back-compat -- prefer image_ids.
+
+        NOTE: this only enriches FUTURE dumps; existing .npz files must be regenerated
+        (re-run the val() dump) to gain the new keys.
+        """
+        with torch.no_grad():
+            target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
+            target_areas = torch.cat([t["area"][i] for t, (_, i) in zip(targets, indices)], dim=0).float()
+            target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+
+            widths = target_boxes[:, 2]   # NORMALISED w (not pixels)
+            heights = target_boxes[:, 3]  # NORMALISED h (not pixels)
+
+            # ── per-image dims, broadcast to each matched pair ───────────────────────
+            def _dims(t):
+                # input (model) H,W: target["size"] is [H,W] (set by Resize/Pad);
+                # if no such transform ran (e.g. AI-TOD), input == original.
+                if "size" in t:
+                    h_in, w_in = float(t["size"][0]), float(t["size"][1])
+                elif "orig_size" in t:  # orig_size is stored as [W,H]
+                    w_in, h_in = float(t["orig_size"][0]), float(t["orig_size"][1])
+                else:
+                    h_in = w_in = float("nan")
+                if "orig_size" in t:    # [W,H]
+                    w_o, h_o = float(t["orig_size"][0]), float(t["orig_size"][1])
+                else:
+                    w_o, h_o = w_in, h_in
+                return h_in, w_in, h_o, w_o
+
+            dev = target_boxes.device
+            ih, iw, oh, ow, iid = [], [], [], [], []
+            for t, (_, J) in zip(targets, indices):
+                n = len(J)
+                h_in, w_in, h_o, w_o = _dims(t)
+                ih.append(torch.full((n,), h_in, device=dev))
+                iw.append(torch.full((n,), w_in, device=dev))
+                oh.append(torch.full((n,), h_o, device=dev))
+                ow.append(torch.full((n,), w_o, device=dev))
+                _id = int(t["image_id"].item()) if "image_id" in t else -1
+                iid.append(torch.full((n,), _id, device=dev, dtype=torch.long))
+            input_h = torch.cat(ih) if ih else torch.zeros(0, device=dev)
+            input_w = torch.cat(iw) if iw else torch.zeros(0, device=dev)
+            orig_h = torch.cat(oh) if oh else torch.zeros(0, device=dev)
+            orig_w = torch.cat(ow) if ow else torch.zeros(0, device=dev)
+            image_ids = torch.cat(iid) if iid else torch.zeros(0, device=dev, dtype=torch.long)
+
+            area_in_px = (widths * input_w) * (heights * input_h)      # mechanism axis
+            area_orig_px = (widths * orig_w) * (heights * orig_h)      # benchmark axis
+
+            # ── predicted scores ────────────────────────────────────────────────────
+            matched_scores = torch.sigmoid(pred_logits[idx])  # [N, num_classes]
+            gt_class_scores = matched_scores[torch.arange(len(target_classes_o)), target_classes_o]  # GT-class p
+            max_scores, max_pred_classes = matched_scores.max(dim=-1)  # ranking score used by NMS/top-K
+            is_correct_class = max_pred_classes == target_classes_o
+
+            residuals = gt_class_scores.cpu().float() - ious.cpu().float()
+
+            # ── write buffer ─────────────────────────────────────────────────────────
+            # existing keys (kept for back-compat with prior dumps / analysis)
+            buf = self._vfl_buffer
+            buf["ious"].append(ious.cpu().float().numpy())                    # q = VFL soft target
+            buf["scores"].append(gt_class_scores.cpu().float().numpy())       # p = GT-class score
+            buf["max_scores"].append(max_scores.cpu().float().numpy())
+            buf["areas"].append(target_areas.cpu().float().numpy())           # input-space px^2 (Resize-scaled)
+            buf["widths"].append(widths.cpu().float().numpy())                # NORMALISED
+            buf["heights"].append(heights.cpu().float().numpy())              # NORMALISED
+            buf["residuals"].append(residuals.numpy())
+            buf["target_classes"].append(target_classes_o.cpu().numpy())
+            buf["is_correct_class"].append(is_correct_class.cpu().numpy())
+            buf["batch_indices"].append(idx[0].cpu().numpy())                 # per-batch local (legacy)
+            # new, unambiguous geometry / identity (setdefault avoids touching __init__)
+            buf.setdefault("image_ids", []).append(image_ids.cpu().numpy())
+            buf.setdefault("input_h", []).append(input_h.cpu().float().numpy())
+            buf.setdefault("input_w", []).append(input_w.cpu().float().numpy())
+            buf.setdefault("orig_h", []).append(orig_h.cpu().float().numpy())
+            buf.setdefault("orig_w", []).append(orig_w.cpu().float().numpy())
+            buf.setdefault("area_in_px", []).append(area_in_px.cpu().float().numpy())
+            buf.setdefault("area_orig_px", []).append(area_orig_px.cpu().float().numpy())
+
+    def save_vfl_stats(self, output_dir):
+        import numpy as np
+        if not hasattr(self, '_vfl_buffer') or not self._vfl_buffer["ious"]:
+            print("No stats collected.")
+            return
+
+        save_dict = {
+            k: np.concatenate(v)
+            for k, v in self._vfl_buffer.items()
+            if len(v) > 0
+        }
+
+        np.savez(output_dir, **save_dict)
+
+        n = len(save_dict["ious"])
+        print(f"Saved vfl_stats.npz | total matched pairs: {n}")
+        print(f"Fields: {list(save_dict.keys())}")
+        for k in self._vfl_buffer:
+            self._vfl_buffer[k] = []
+
+
+
+
+

@@ -11,7 +11,7 @@ import torch
 
 from ..misc import dist_utils, stats
 from ._solver import BaseSolver
-from .det_engine import evaluate, train_one_epoch
+from .det_engine import SAVE_TP_FP_ANALYSIS, evaluate, train_one_epoch
 
 
 class DetSolver(BaseSolver):
@@ -51,6 +51,7 @@ class DetSolver(BaseSolver):
                 self.val_dataloader,
                 self.evaluator,
                 self.device,
+                output_dir=self.output_dir,
             )
             for k in test_stats:
                 best_stat["epoch"] = self.last_epoch
@@ -119,6 +120,7 @@ class DetSolver(BaseSolver):
                 self.val_dataloader,
                 self.evaluator,
                 self.device,
+                output_dir=self.output_dir,
             )
 
             # TODO
@@ -218,6 +220,9 @@ class DetSolver(BaseSolver):
         self.eval()
 
         module = self.ema.module if self.ema else self.model
+
+        self.criterion.extract_vfl_stats = SAVE_TP_FP_ANALYSIS
+
         test_stats, coco_evaluator = evaluate(
             module,
             self.criterion,
@@ -225,7 +230,12 @@ class DetSolver(BaseSolver):
             self.val_dataloader,
             self.evaluator,
             self.device,
+            output_dir=self.output_dir,
         )
+
+        if SAVE_TP_FP_ANALYSIS:
+            self.criterion.extract_vfl_stats = False
+            self.criterion.save_vfl_stats(self.output_dir / "vfl_stats.npz")
 
         if self.output_dir:
             dist_utils.save_on_master(
