@@ -46,6 +46,12 @@ class DomeCriterion(nn.Module):
         density_recall_penalty=0.3,
         mal_alpha=None,
         use_uni_set=True,
+        aiiou_variant="none",
+        aiiou_s_ref=32.0,
+        aiiou_lam=1.0,
+        aiiou_alpha=0.5,
+        aiiou_B=0.2,
+        aiiou_size_space="orig",
     ):
         """Create the criterion.
         Parameters:
@@ -73,6 +79,18 @@ class DomeCriterion(nn.Module):
         self.density_recall_penalty = density_recall_penalty
         self.mal_alpha = mal_alpha
         self.use_uni_set = use_uni_set
+        # Adaptive Inner-IoU (AI-IoU) soft-target variant. 'none' = baseline (raw IoU).
+        #   mult     : scaled-box IoU, r = max(1, s_ref/s_gt)          (the main method)
+        #   smooth   : scaled-box IoU, r = sqrt(1 + s_ref^2/s_gt^2)    (no kink)
+        #   partial  : scaled-box IoU, s_eff = max(s_gt, lam*s_ref)    (weaker floor)
+        #   convex   : alpha*q_ai(mult) + (1-alpha)*q                  (blend)
+        #   additive : clip(q + B*(1 - s_gt/s_ref)_+, 0, 1)            (slope-preserving)
+        self.aiiou_variant = aiiou_variant
+        self.aiiou_s_ref = aiiou_s_ref
+        self.aiiou_lam = aiiou_lam
+        self.aiiou_alpha = aiiou_alpha
+        self.aiiou_B = aiiou_B
+        self.aiiou_size_space = aiiou_size_space  # 'orig' (AP_S px, default) | 'input'
 
         self._vfl_buffer = {
             # 核心字段
@@ -95,6 +113,67 @@ class DomeCriterion(nn.Module):
             "batch_indices": [],
         }
         self.extract_vfl_stats = False
+
+    # ---------------- Adaptive Inner-IoU (AI-IoU) soft-target variants ----------------
+    def _aiiou_gt_size_px(self, targets, indices, target_boxes):
+        """Per-matched-box GT size sqrt(area) in pixels. Default space 'orig' ties s_ref
+        to the COCO AP_S boundary (original px); 'input' uses model-input px. Boxes are
+        normalised cxcywh, so px size = sqrt((w*W)*(h*H))."""
+        space = getattr(self, "aiiou_size_space", "orig")
+        ws, hs = [], []
+        for t, (_, J) in zip(targets, indices):
+            n = len(J)
+            if space == "input" and "size" in t:        # size is [H, W] (Resize/Pad)
+                h, w = float(t["size"][0]), float(t["size"][1])
+            elif "orig_size" in t:                       # orig_size is [W, H]
+                w, h = float(t["orig_size"][0]), float(t["orig_size"][1])
+            elif "size" in t:
+                h, w = float(t["size"][0]), float(t["size"][1])
+            else:
+                w = h = 1.0
+            ws.append(torch.full((n,), w)); hs.append(torch.full((n,), h))
+        dev = target_boxes.device
+        W = torch.cat(ws).to(dev) if ws else torch.zeros(0, device=dev)
+        H = torch.cat(hs).to(dev) if hs else torch.zeros(0, device=dev)
+        area = (target_boxes[:, 2] * W) * (target_boxes[:, 3] * H)
+        return torch.sqrt(torch.clamp(area, min=1e-6))
+
+    def _aiiou_ratio(self, s_gt):
+        s_ref = self.aiiou_s_ref
+        if self.aiiou_variant == "smooth":
+            return torch.sqrt(1.0 + (s_ref ** 2) / torch.clamp(s_gt ** 2, min=1e-6))
+        lam = self.aiiou_lam if self.aiiou_variant == "partial" else 1.0
+        return torch.clamp((lam * s_ref) / s_gt, min=1.0)   # s_eff = max(s_gt, lam*s_ref)
+
+    def _aiiou_scaled_iou(self, src, tgt, r):
+        """IoU of src/tgt after scaling both about their centers by r (cxcywh: *w,*h)."""
+        rs = r.unsqueeze(-1)
+        src_s = src.clone(); src_s[:, 2:] = src[:, 2:] * rs
+        tgt_s = tgt.clone(); tgt_s[:, 2:] = tgt[:, 2:] * rs
+        iou, _ = box_iou(box_cxcywh_to_xyxy(src_s), box_cxcywh_to_xyxy(tgt_s))
+        return torch.diag(iou)
+
+    def _apply_aiiou(self, ious, outputs, targets, indices, idx):
+        """Replace the raw-IoU soft target q with an AI-IoU variant (detached). variant
+        'none' is the identity. Acts on matched positives only."""
+        var = getattr(self, "aiiou_variant", "none")
+        if var in (None, "none") or ious.numel() == 0:
+            return ious
+        with torch.no_grad():
+            src_boxes = outputs["pred_boxes"][idx]
+            target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
+            s_gt = self._aiiou_gt_size_px(targets, indices, target_boxes)
+            q = ious
+            if var == "additive":
+                bonus = self.aiiou_B * torch.clamp(1.0 - s_gt / self.aiiou_s_ref, min=0.0)
+                q_ai = torch.clamp(q + bonus, 0.0, 1.0)
+            else:
+                q_scaled = self._aiiou_scaled_iou(src_boxes, target_boxes, self._aiiou_ratio(s_gt))
+                if var == "convex":
+                    q_ai = self.aiiou_alpha * q_scaled + (1.0 - self.aiiou_alpha) * q
+                else:  # mult / smooth / partial
+                    q_ai = q_scaled
+            return q_ai.to(ious.dtype)
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes, batch_queries_num=None):
         assert "pred_logits" in outputs
@@ -133,6 +212,8 @@ class DomeCriterion(nn.Module):
         if self.extract_vfl_stats:
             self.extract_vfl_stats_func(ious, outputs["pred_logits"], idx, targets, indices)
 
+        ious = self._apply_aiiou(ious, outputs, targets, indices, idx)
+
         src_logits = outputs["pred_logits"]
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(
@@ -170,6 +251,8 @@ class DomeCriterion(nn.Module):
             ious = torch.diag(ious).detach()
         else:
             ious = values
+
+        ious = self._apply_aiiou(ious, outputs, targets, indices, idx)
 
         src_logits = outputs['pred_logits']
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
@@ -219,9 +302,10 @@ class DomeCriterion(nn.Module):
         loss_giou = loss_giou if boxes_weight is None else loss_giou * boxes_weight
         losses["loss_giou"] = loss_giou.sum() / num_boxes
 
-        buf = self._vfl_buffer
-        buf["l1"].append(loss_bbox.cpu().float().numpy())
-        buf["gious"].append(loss_giou.cpu().float().numpy())
+        if self.extract_vfl_stats:
+            buf = self._vfl_buffer
+            buf["l1"].append(loss_bbox.cpu().float().numpy())
+            buf["gious"].append(loss_giou.cpu().float().numpy())
 
         return losses
 
