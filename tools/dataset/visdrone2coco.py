@@ -5,6 +5,10 @@ import json
  
  
 def convert_to_cocodetection(dir, output_dir):
+    dir = os.path.expanduser(dir)
+    output_dir = os.path.expanduser(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
     train_dir = os.path.join(dir, "VisDrone2019-DET-train")
     val_dir = os.path.join(dir, "VisDrone2019-DET-val")
     train_annotations = os.path.join(train_dir, "annotations")
@@ -75,6 +79,7 @@ def convert_to_cocodetection(dir, output_dir):
         dataset_dict["annotations"] = annotations
         dataset_dict["categories"] = categories
         json_str = json.dumps(dataset_dict)
+
         for output_name in [
             f"VisDrone2019-DET_{mode}_coco.json",
             f"VisDrone2019-DET_{mode}_coco_new.json",
@@ -135,4 +140,4 @@ def clamp(coord, width, height):
  
  
 if __name__ == '__main__':
-    convert_to_cocodetection(r"/mnt/volumes/base-tts-ali-sh-mix/huzhangchi/data/visdrone",r"/mnt/volumes/base-tts-ali-sh-mix/huzhangchi/data/visdrone/annotations_coco")
+    convert_to_cocodetection(r"~/Data/datasets/visdrone/",r"~/Data/datasets/visdrone/annotations_coco")
