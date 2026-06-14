@@ -107,10 +107,10 @@ fi
 # start_eval: skip validation before this epoch (defined on the FULL-schedule
 # scale, e.g. 90 of 160). Big AITOD speedup since early stage-1 eval is wasted:
 # stage-1 AP is ~monotonic, so best_stg1 == the last evaluated stage-1 epoch.
-# 90 still leaves ~18 epochs of stage-1 eval margin below stop_epoch (108) to
+# 90 still leaves ~30 epochs of stage-1 eval margin below stop_epoch (108) to
 # robustly capture best_stg1. Scales with EPOCHS and is clamped below stop_epoch
 # so best_stg1 is still produced and all of stage-2 is evaluated. 0 = off.
-START_EVAL=${START_EVAL:-90}
+START_EVAL=${START_EVAL:-78}
 
 # --- read baseline schedule FROM THE CONFIG (needed for scaling / clamping) --
 SCHED_OV=""
