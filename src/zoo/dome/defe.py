@@ -119,12 +119,28 @@ class LiteDeFE(nn.Module):
             align_corners=False
         )
 
+        # === 诊断 1: density_head 输出（sigmoid 后）应严格 > 0 且有限 ===
+        if not torch.isfinite(density).all():
+            n_nan = torch.isnan(density).sum().item()
+            n_inf = torch.isinf(density).sum().item()
+            raise AssertionError(
+                f"[DeFE] density 含非有限值: NaN={n_nan}, Inf={n_inf}, "
+                f"max={density.max()}, min={density.min()}, shape={tuple(density.shape)} "
+                f"-> 上游/density_head 数值发散（查 AMP/学习率/loss 爆炸）"
+            )
+        # sigmoid 输出本应 > 0；若 <=0 说明被 fp16 下溢或上游异常
+        assert density.max() > 0, (
+            f"[DeFE] density.max()={density.max().item()} <= 0，整图无正值 "
+            f"（min={density.min().item()}, shape={tuple(density.shape)}）"
+            f" -> sigmoid 输出异常/下溢"
+        )
+
         # 对density进行0-1归一化
         if density.max() > 0:
             density = density / density.max()
 
         reg_value = self.regression_head(x)
-        
+
         return density, reg_value
     
 

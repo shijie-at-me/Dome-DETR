@@ -472,7 +472,21 @@ class HybridEncoder(nn.Module):
         B = defe_feature.shape[0]
         device = defe_feature.device
         final_mask = torch.zeros_like(defe_feature, dtype=torch.bool)
-        
+
+        # === 诊断 0: 整张输入特征图的健康检查 ===
+        if defe_feature.numel() == 0:
+            raise AssertionError(
+                f"[adaptive_defe_filter] 输入为空张量 shape={tuple(defe_feature.shape)} "
+                f"-> 上游 adaptive_max_pool2d 尺寸退化为 0（检查 H//window、W//window 与 mwas_window_size）"
+            )
+        if not torch.isfinite(defe_feature).all():
+            n_nan = torch.isnan(defe_feature).sum().item()
+            n_inf = torch.isinf(defe_feature).sum().item()
+            raise AssertionError(
+                f"[adaptive_defe_filter] 输入含非有限值: NaN={n_nan}, Inf={n_inf}, "
+                f"shape={tuple(defe_feature.shape)} -> 上游 DeFE/插值已发散"
+            )
+
         # 对每个样本独立处理
         for b in range(B):
             # 提取单样本置信图 [1, H, W]
@@ -491,6 +505,15 @@ class HybridEncoder(nn.Module):
             
             # 未找到有效区域则随机选择一个点加强
             if not found:
+                # === 诊断 2: 打印这个样本到底为什么全部 <= 0 ===
+                sf = single_feat
+                print(
+                    f"[adaptive_defe_filter] Batch {b}: No valid region found | "
+                    f"shape={tuple(sf.shape)}, max={sf.max().item():.6g}, min={sf.min().item():.6g}, "
+                    f"mean={sf.mean().item():.6g}, n>0={(sf > 0).sum().item()}, "
+                    f"n_nan={torch.isnan(sf).sum().item()}, n_inf={torch.isinf(sf).sum().item()} "
+                    f"-> 该样本无任何正值（正常 sigmoid 不该出现，多半是 NaN/下溢/全零）"
+                )
                 final_mask[b:b+1] = torch.zeros_like(single_feat, dtype=torch.bool)
                 final_mask[b:b+1][:, random.randint(0, single_feat.shape[1] - 1), random.randint(0, single_feat.shape[2] - 1)] = True
                 print(f"Batch {b}: No valid region found, use random point enhancement")
