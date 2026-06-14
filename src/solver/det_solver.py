@@ -101,7 +101,9 @@ class DetSolver(BaseSolver):
 
             self.last_epoch += 1
 
-            if self.output_dir and epoch < self.train_dataloader.collate_fn.stop_epoch:
+            if self.output_dir:
+                # Always write last.pth every epoch (incl. stage-2) so training is
+                # resumable from the exact last epoch, not only from best_stg2.pth.
                 checkpoint_paths = [self.output_dir / "last.pth"]
                 # extra checkpoint before LR drop and every 100 epochs
                 if (epoch + 1) % args.checkpoint_freq == 0:
@@ -111,11 +113,13 @@ class DetSolver(BaseSolver):
 
             module = self.ema.module if self.ema else self.model
 
-            # Skip validation before start_eval to save time (cheap eval is wasted
-            # in early stage-1, which is ~monotonic). start_eval is kept < stop_epoch
-            # so best_stg1 is still produced and all of stage-2 is evaluated.
-            if epoch < self.start_eval:
-                print(f"Skip eval at epoch {epoch} (< start_eval={self.start_eval})")
+            # Before start_eval, don't skip eval entirely: still evaluate every 10th
+            # epoch so we get a coarse early-training curve, while saving most of the
+            # eval cost in the ~monotonic early stage-1. From start_eval on, eval every
+            # epoch. start_eval is kept < stop_epoch so best_stg1 is still produced and
+            # all of stage-2 is evaluated.
+            if epoch < self.start_eval and epoch % 10 != 0:
+                print(f"Skip eval at epoch {epoch} (< start_eval={self.start_eval}, not a multiple of 10)")
                 test_stats, coco_evaluator = {}, None
             else:
                 print("Evaluate state starting...")
