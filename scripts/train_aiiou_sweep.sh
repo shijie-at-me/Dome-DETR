@@ -28,6 +28,14 @@
 # Override knobs via env, e.g.:
 #     DEVICES=6,7 GPUS=2 EPOCHS=80 bash scripts/train_aiiou_sweep.sh visdrone m
 #
+# BATCH SIZE: default bs=8 (canonical). Set BS=16 to train at global batch 16
+# (doubled lrs, linear scaling rule) for faster sweeps:
+#     BS=16 bash scripts/train_aiiou_sweep.sh visdrone m
+# This selects configs/dome/Dome-<S|M|L>-<dataset>-bs16.yml (must exist; see
+# Dome-M-VisDrone-bs16.yml) and writes to a SEPARATE output/aiiou-<size>-<dataset>-bs16/
+# tree so bs8/bs16 checkpoints never collide. Re-validate the winning variant at
+# the canonical bs=8 config before finalizing paper numbers.
+#
 # NOTE on EPOCHS: simply lowering `epoches` would desync the epoch-coupled
 # schedule (LR milestones, strong-aug stop). When EPOCHS is set, this script
 # reads the chosen config's baseline schedule and scales ALL epoch-coupled
@@ -62,9 +70,27 @@ case "$size_u" in
   *) echo "ERROR: size must be s, m, or l (got '$SIZE')"; exit 1 ;;
 esac
 
+# --- batch-size selection ---------------------------------------------------
+# BS=8  -> canonical config  Dome-<S|M|L>-<AITOD|VisDrone>.yml       (total_batch_size 8)
+# BS=16 -> doubled-batch cfg Dome-<S|M|L>-<AITOD|VisDrone>-bs16.yml  (total_batch_size 16,
+#          ALL lrs doubled per the linear scaling rule). That wrapper merely
+#          __include__s the bs=8 config, so the epoch-coupled schedule is shared
+#          and is still read below from the canonical (bs=8) file.
+BS=${BS:-8}
+case "$BS" in 8|16) ;; *) echo "ERROR: BS must be 8 or 16 (got '$BS')"; exit 1 ;; esac
+
 # --- auto-derived paths (match test.sh) -------------------------------------
-CONFIG=${CONFIG:-configs/dome/Dome-${size_u}-${dataset_proper}.yml}
-OUT_ROOT=${OUT_ROOT:-output/aiiou-${size_l}-${dataset_l}}
+# BASE_CONFIG is always the canonical bs=8 file: it is the source of truth for
+# the epoch-coupled schedule (the bs16 wrapper does not redeclare those keys).
+BASE_CONFIG=configs/dome/Dome-${size_u}-${dataset_proper}.yml
+if [ "$BS" -eq 16 ]; then
+  # separate output tree so bs8/bs16 checkpoints never share a last.pth (auto-resume)
+  CONFIG=${CONFIG:-configs/dome/Dome-${size_u}-${dataset_proper}-bs16.yml}
+  OUT_ROOT=${OUT_ROOT:-output/aiiou-${size_l}-${dataset_l}-bs16}
+else
+  CONFIG=${CONFIG:-$BASE_CONFIG}
+  OUT_ROOT=${OUT_ROOT:-output/aiiou-${size_l}-${dataset_l}}
+fi
 
 DEVICES=${DEVICES:-0,1}            # CUDA_VISIBLE_DEVICES
 GPUS=${GPUS:-2}                    # nproc_per_node (must match #DEVICES)
@@ -72,7 +98,13 @@ PORT=${PORT:-7790}
 SEED=${SEED:-0}                    # fixed across variants for fair comparison
 EPOCHS=${EPOCHS:-}                 # empty = full config schedule; set e.g. 80 to shorten (scaled)
 
-[ -f "$CONFIG" ] || { echo "ERROR: config not found: $CONFIG"; exit 1; }
+[ -f "$BASE_CONFIG" ] || { echo "ERROR: base config not found: $BASE_CONFIG"; exit 1; }
+if [ ! -f "$CONFIG" ]; then
+  echo "ERROR: config not found: $CONFIG"
+  [ "$BS" -eq 16 ] && echo "  (BS=16 needs a bs16 wrapper config; create one like configs/dome/Dome-M-VisDrone-bs16.yml:" && \
+    echo "   __include__ the bs=8 file, set train/val total_batch_size to 16/32, and double all lrs.)"
+  exit 1
+fi
 
 # "name|<DomeCriterion overrides, space-separated, WITHOUT the DomeCriterion. prefix>"
 # Comment/uncomment rows to choose the sweep. baseline + mult + additive first.
@@ -115,14 +147,16 @@ START_EVAL=${START_EVAL:-78}
 # --- read baseline schedule FROM THE CONFIG (needed for scaling / clamping) --
 SCHED_OV=""
 if [ -n "$EPOCHS" ] || [ "${START_EVAL:-0}" -gt 0 ]; then
-  base_ep=$(grep -E '^epoches:' "$CONFIG" | grep -oE '[0-9]+' | head -1)
-  base_m1=$(grep -E 'milestones:' "$CONFIG" | grep -oE '[0-9]+' | sed -n 1p)
-  base_m2=$(grep -E 'milestones:' "$CONFIG" | grep -oE '[0-9]+' | sed -n 2p)
-  base_stop=$(grep -E 'stop_epoch:' "$CONFIG" | grep -oE '[0-9]+' | head -1)
-  base_aug=$(awk '/policy:/{f=1} f&&/epoch:/{print $2; exit}' "$CONFIG")
+  # always read the schedule from BASE_CONFIG: the bs16 wrapper only redeclares
+  # batch sizes + lrs and inherits epoches/milestones/stop_epoch via __include__.
+  base_ep=$(grep -E '^epoches:' "$BASE_CONFIG" | grep -oE '[0-9]+' | head -1)
+  base_m1=$(grep -E 'milestones:' "$BASE_CONFIG" | grep -oE '[0-9]+' | sed -n 1p)
+  base_m2=$(grep -E 'milestones:' "$BASE_CONFIG" | grep -oE '[0-9]+' | sed -n 2p)
+  base_stop=$(grep -E 'stop_epoch:' "$BASE_CONFIG" | grep -oE '[0-9]+' | head -1)
+  base_aug=$(awk '/policy:/{f=1} f&&/epoch:/{print $2; exit}' "$BASE_CONFIG")
   : "${base_aug:=$base_stop}"   # fall back to stop_epoch if policy.epoch absent
   if [ -z "$base_ep" ] || [ -z "$base_m1" ] || [ -z "$base_m2" ] || [ -z "$base_stop" ]; then
-    echo "ERROR: could not parse baseline schedule from $CONFIG (epoches/milestones/stop_epoch)"; exit 1
+    echo "ERROR: could not parse baseline schedule from $BASE_CONFIG (epoches/milestones/stop_epoch)"; exit 1
   fi
 fi
 
@@ -166,7 +200,7 @@ run_one () {
   [ -f "${outdir}/last.pth" ] && resume_arg="-r ${outdir}/last.pth"
 
   echo "============================================================"
-  echo "[$(date '+%F %T')] ${dataset_l}/${size_u} variant=${name}"
+  echo "[$(date '+%F %T')] ${dataset_l}/${size_u} bs=${BS} variant=${name}"
   echo "  config:    ${CONFIG}"
   echo "  overrides: ${u_args}${resume_arg:+   (resume)}"
   echo "  outdir:    ${outdir}"
