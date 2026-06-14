@@ -141,6 +141,7 @@ class BaseSolver(object):
 
         self.device = device
         self.last_epoch = self.cfg.last_epoch
+        self.start_eval = getattr(self.cfg, "start_eval", 0) or 0
 
         self.output_dir = Path(cfg.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)

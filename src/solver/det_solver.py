@@ -111,17 +111,23 @@ class DetSolver(BaseSolver):
 
             module = self.ema.module if self.ema else self.model
 
-            print("Evaluate state starting...")
-
-            test_stats, coco_evaluator = evaluate(
-                module,
-                self.criterion,
-                self.postprocessor,
-                self.val_dataloader,
-                self.evaluator,
-                self.device,
-                output_dir=self.output_dir,
-            )
+            # Skip validation before start_eval to save time (cheap eval is wasted
+            # in early stage-1, which is ~monotonic). start_eval is kept < stop_epoch
+            # so best_stg1 is still produced and all of stage-2 is evaluated.
+            if epoch < self.start_eval:
+                print(f"Skip eval at epoch {epoch} (< start_eval={self.start_eval})")
+                test_stats, coco_evaluator = {}, None
+            else:
+                print("Evaluate state starting...")
+                test_stats, coco_evaluator = evaluate(
+                    module,
+                    self.criterion,
+                    self.postprocessor,
+                    self.val_dataloader,
+                    self.evaluator,
+                    self.device,
+                    output_dir=self.output_dir,
+                )
 
             # TODO
             for k in test_stats:

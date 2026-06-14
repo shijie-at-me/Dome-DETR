@@ -70,6 +70,7 @@ class BaseConfig(object):
         self.seed: int = None
         self.print_freq: int = None
         self.checkpoint_freq: int = 1
+        self.start_eval: int = 0  # skip validation before this epoch (must be < stop_epoch); 0 = eval every epoch
         self.output_dir: str = None
         self.summary_dir: str = None
         self.device: str = ""
