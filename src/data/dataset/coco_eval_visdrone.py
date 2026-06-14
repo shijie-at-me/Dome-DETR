@@ -49,8 +49,9 @@ class VisdroneCOCOeval_faster(COCOeval_faster):
 
         def _summarizeDets():
             # indices 0-12 keep their original meaning (stats[0]=AP_all drives
-            # best_stat downstream); 13-16 append the new verytiny/tiny metrics.
-            _count = 16 if self.lvis_style else 17
+            # best_stat downstream); 13-16 append verytiny/tiny AP/AR, 17-21 append
+            # per-size AP@0.5. (lvis_style is False here; size 22 covers both paths.)
+            _count = 22
             stats = np.zeros((_count,))
 
             stats[0] = self._summarize(1, maxDets=self.params.maxDets[-1])  # AP_all
@@ -61,6 +62,12 @@ class VisdroneCOCOeval_faster(COCOeval_faster):
             stats[3] = self._summarize(1, areaRng="small", maxDets=self.params.maxDets[-1])  # AP_small (<32px)
             stats[4] = self._summarize(1, areaRng="medium", maxDets=self.params.maxDets[-1])  # AP_medium
             stats[5] = self._summarize(1, areaRng="large", maxDets=self.params.maxDets[-1])  # AP_large
+            # per-size AP at IoU=0.5 (so the log shows AP@.5 broken out by size)
+            stats[17] = self._summarize(1, iouThr=0.5, areaRng="verytiny", maxDets=self.params.maxDets[-1])  # AP50_verytiny
+            stats[18] = self._summarize(1, iouThr=0.5, areaRng="tiny", maxDets=self.params.maxDets[-1])  # AP50_tiny
+            stats[19] = self._summarize(1, iouThr=0.5, areaRng="small", maxDets=self.params.maxDets[-1])  # AP50_small
+            stats[20] = self._summarize(1, iouThr=0.5, areaRng="medium", maxDets=self.params.maxDets[-1])  # AP50_medium
+            stats[21] = self._summarize(1, iouThr=0.5, areaRng="large", maxDets=self.params.maxDets[-1])  # AP50_large
 
             if self.lvis_style:
                 stats[14] = self._summarize(1, maxDets=self.params.maxDets[-1], freq_group_idx=0)  # APr

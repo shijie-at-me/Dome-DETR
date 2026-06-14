@@ -87,6 +87,16 @@ class AitodCocoEvaluator(object):
         for iou_type, coco_eval in self.coco_eval.items():
             print("IoU metric: {}".format(iou_type))
             coco_eval.summarize()
+            # Extra: AP@0.5 broken out per object-size bin. The package's default
+            # AITOD summary only reports per-size AP at IoU=.50:.95; this appends
+            # the IoU=0.5 value for each size. Reuses the package's own _summarize
+            # + area labels, so it adapts to verytiny/tiny/small/medium automatically.
+            if iou_type == "bbox":
+                max_det = coco_eval.params.maxDets[-1]
+                for area_lbl in coco_eval.params.areaRngLbl:
+                    if area_lbl == "all":
+                        continue  # AP@.5 for area=all is already printed above
+                    coco_eval._summarize(1, iouThr=0.5, areaRng=area_lbl, maxDets=max_det)
 
     def prepare(self, predictions, iou_type):
         if iou_type == "bbox":
