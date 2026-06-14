@@ -52,6 +52,7 @@ class DomeCriterion(nn.Module):
         aiiou_alpha=0.5,
         aiiou_B=0.2,
         aiiou_size_space="orig",
+        aiiou_gamma=1.0,
     ):
         """Create the criterion.
         Parameters:
@@ -85,12 +86,15 @@ class DomeCriterion(nn.Module):
         #   partial  : scaled-box IoU, s_eff = max(s_gt, lam*s_ref)    (weaker floor)
         #   convex   : alpha*q_ai(mult) + (1-alpha)*q                  (blend)
         #   additive : clip(q + B*(1 - s_gt/s_ref)_+, 0, 1)            (slope-preserving)
+        #   obj      : clip(q + phi(s)*(1-q), 0, 1), phi=max(0,1-s/s_ref)^gamma
+        #              (objectness interpolation: tiny -> 1, large -> q)
         self.aiiou_variant = aiiou_variant
         self.aiiou_s_ref = aiiou_s_ref
         self.aiiou_lam = aiiou_lam
         self.aiiou_alpha = aiiou_alpha
         self.aiiou_B = aiiou_B
         self.aiiou_size_space = aiiou_size_space  # 'orig' (AP_S px, default) | 'input'
+        self.aiiou_gamma = aiiou_gamma            # obj: phi(s) taper exponent
 
         self._vfl_buffer = {
             # 核心字段
@@ -164,7 +168,10 @@ class DomeCriterion(nn.Module):
             target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
             s_gt = self._aiiou_gt_size_px(targets, indices, target_boxes)
             q = ious
-            if var == "additive":
+            if var == "obj":
+                phi = torch.clamp(1.0 - s_gt / self.aiiou_s_ref, min=0.0) ** self.aiiou_gamma
+                q_ai = torch.clamp(q + phi * (1.0 - q), 0.0, 1.0)
+            elif var == "additive":
                 bonus = self.aiiou_B * torch.clamp(1.0 - s_gt / self.aiiou_s_ref, min=0.0)
                 q_ai = torch.clamp(q + bonus, 0.0, 1.0)
             else:

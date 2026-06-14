@@ -25,13 +25,20 @@ class VisdroneCOCOeval_faster(COCOeval_faster):
     def __init__(self, coco_gt, iou_type, print_function=print, separate_eval=True):
         super(VisdroneCOCOeval_faster, self).__init__(coco_gt, iouType=iou_type, print_function=print_function, separate_eval=separate_eval)
         self.params.maxDets = [1, 10, 100, 500]
+        # Add verytiny(<8px) and tiny(8-16px) bins so tiny-object AP/AR is broken
+        # out -- VisDrone's standard small(<32px) lumps them together. areaRng and
+        # areaRngLbl MUST stay index-aligned: _summarize() does
+        # params.areaRngLbl.index(label) then indexes precision[..., that idx, ...].
         self.params.areaRng = [
-            [0**2, 1e5**2],
-            [0**2, 32**2],
-            [32**2, 96**2],
-            [96**2, 1e5**2],
+            [0**2, 1e5**2],   # all
+            [0**2, 8**2],     # verytiny (<8px)
+            [8**2, 16**2],    # tiny     (8-16px)
+            [0**2, 32**2],    # small    (<32px, unchanged VisDrone/COCO definition)
+            [32**2, 96**2],   # medium
+            [96**2, 1e5**2],  # large
         ]
-        self.areaRngLbl = ["all", "small", "medium", "large"]
+        self.params.areaRngLbl = ["all", "verytiny", "tiny", "small", "medium", "large"]
+        self.areaRngLbl = self.params.areaRngLbl  # keep legacy attr consistent
 
     def summarize(self):
         """Compute and display summary metrics for evaluation results.
@@ -41,13 +48,17 @@ class VisdroneCOCOeval_faster(COCOeval_faster):
         """
 
         def _summarizeDets():
-            _count = 16 if self.lvis_style else 13
+            # indices 0-12 keep their original meaning (stats[0]=AP_all drives
+            # best_stat downstream); 13-16 append the new verytiny/tiny metrics.
+            _count = 16 if self.lvis_style else 17
             stats = np.zeros((_count,))
 
             stats[0] = self._summarize(1, maxDets=self.params.maxDets[-1])  # AP_all
             stats[1] = self._summarize(1, iouThr=0.5, maxDets=self.params.maxDets[-1])  # AP_50
             stats[2] = self._summarize(1, iouThr=0.75, maxDets=self.params.maxDets[-1])  # AP_75
-            stats[3] = self._summarize(1, areaRng="small", maxDets=self.params.maxDets[-1])  # AP_small
+            stats[13] = self._summarize(1, areaRng="verytiny", maxDets=self.params.maxDets[-1])  # AP_verytiny (<8px)
+            stats[14] = self._summarize(1, areaRng="tiny", maxDets=self.params.maxDets[-1])  # AP_tiny (8-16px)
+            stats[3] = self._summarize(1, areaRng="small", maxDets=self.params.maxDets[-1])  # AP_small (<32px)
             stats[4] = self._summarize(1, areaRng="medium", maxDets=self.params.maxDets[-1])  # AP_medium
             stats[5] = self._summarize(1, areaRng="large", maxDets=self.params.maxDets[-1])  # AP_large
 
@@ -64,6 +75,8 @@ class VisdroneCOCOeval_faster(COCOeval_faster):
             if len(self.params.maxDets) >= 4:
                 stats[9] = self._summarize(0, maxDets=self.params.maxDets[3])  # AR_third
 
+            stats[15] = self._summarize(0, areaRng="verytiny", maxDets=self.params.maxDets[-1])  # AR_verytiny (<8px)
+            stats[16] = self._summarize(0, areaRng="tiny", maxDets=self.params.maxDets[-1])  # AR_tiny (8-16px)
             stats[10] = self._summarize(0, areaRng="small", maxDets=self.params.maxDets[-1])  # AR_small
             stats[11] = self._summarize(0, areaRng="medium", maxDets=self.params.maxDets[-1])  # AR_medium
             stats[12] = self._summarize(0, areaRng="large", maxDets=self.params.maxDets[-1])  # AR_large
