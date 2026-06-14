@@ -114,15 +114,21 @@ def summarize_per_area(coco_eval, coco_gt):
     r = coco_eval.eval["recall"]               # [T, K, A, M]
     prm = coco_eval.params
     m = len(prm.maxDets) - 1
+    i50, i75 = _iou_idx(prm.iouThrs, 0.5), _iou_idx(prm.iouThrs, 0.75)
     ann_ids = coco_gt.getAnnIds(catIds=prm.catIds)  # only evaluated categories
     areas = np.array([a["area"] for a in coco_gt.loadAnns(ann_ids)], dtype=float)
-    print(f"\nAP / AR per area range (IoU=.50:.95, maxDets={prm.maxDets[m]}):")
-    print(f"  {'area':<12}{'#GT':>9}{'AP':>9}{'AR':>9}")
-    print("  " + "-" * 39)
+    # AP is IoU=.50:.95; AP50/AP75 are at those IoUs; AR is IoU=.50:.95 -- all per size.
+    print(f"\nAP / AR per area range (maxDets={prm.maxDets[m]}):")
+    print(f"  {'area':<12}{'#GT':>9}{'AP':>9}{'AP50':>9}{'AP75':>9}{'AR':>9}")
+    print("  " + "-" * 57)
     for a, lbl in enumerate(prm.areaRngLbl):
         lo, hi = prm.areaRng[a]                 # COCO area bounds (px^2); ranges may overlap
         ngt = int(((areas >= lo) & (areas < hi)).sum())
-        print(f"  {lbl:<12}{ngt:>9}{_mean_valid(p[:, :, :, a, m]):>9.4f}{_mean_valid(r[:, :, a, m]):>9.4f}")
+        ap = _mean_valid(p[:, :, :, a, m])
+        ap50 = _mean_valid(p[i50, :, :, a, m]) if i50 is not None else float("nan")
+        ap75 = _mean_valid(p[i75, :, :, a, m]) if i75 is not None else float("nan")
+        ar = _mean_valid(r[:, :, a, m])
+        print(f"  {lbl:<12}{ngt:>9}{ap:>9.4f}{ap50:>9.4f}{ap75:>9.4f}{ar:>9.4f}")
 
 
 def summarize_per_category(coco_eval, coco_gt, csv_path=None):
