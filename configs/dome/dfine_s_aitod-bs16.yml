@@ -1,0 +1,32 @@
+# D-FINE-S on AITOD with global batch size 16 (instead of 8).
+# Thin wrapper over dfine_s_aitod.yml: only the batch sizes and learning rates
+# change. Per the linear LR scaling rule, ALL learning rates are DOUBLED vs the
+# bs=8 config (epoch-coupled schedule — epoches/milestones/stop_epoch/aug policy —
+# is inherited unchanged from the base file). Use for faster sweeps; re-validate
+# the winning variant at the canonical bs=8 config before finalizing paper numbers.
+# Verify the effective lr in train.py's "cfg:" print.
+__include__: ['./dfine_s_aitod.yml']
+
+train_dataloader:
+  total_batch_size: 16
+
+val_dataloader:
+  total_batch_size: 32
+
+# lrs doubled (0.00002 -> 0.00004 backbone, 0.0002 -> 0.0004 base); wd unchanged.
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm|bn).*$'
+      lr: 0.00004
+    -
+      params: '^(?=.*backbone)(?=.*norm|bn).*$'
+      lr: 0.00004
+      weight_decay: 0.
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
+      weight_decay: 0.
+  lr: 0.0004
+  betas: [0.9, 0.999]
+  weight_decay: 0.000065
