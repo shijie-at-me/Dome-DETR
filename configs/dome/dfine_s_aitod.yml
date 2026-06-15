@@ -1,0 +1,93 @@
+__include__: [
+  '../dataset/aitod_detection.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+  './include/dfine_hgnetv2.yml',
+]
+
+# ===== D-FINE-S BASELINE on AITOD (4-level, P2-P5) =====
+# Drop-in D-FINE replacement for Dome-S-AITOD (Dome is too slow to iterate on).
+# The training recipe is matched to Dome-S-AITOD.yml so the ONLY delta vs Dome is
+# the model architecture (plain D-FINE decoder; no DEFE / MWAS / density head):
+#   - backbone:     HGNetv2 B0, 4-level P2-P5, identical freeze/use_lab settings
+#   - encoder:      same in_channels / strides / S-scale depth_mult & expansion
+#   - decoder:      3 layers, 4 levels, 4 points/level (same as Dome-S)
+#   - optimizer:    identical param groups, lr, betas, weight_decay
+#   - schedule:     MultiStepLR [80, 120] gamma 0.8, 160 epochs
+#   - augmentation: same stop_epoch (108) + base_size_repeat (2) policy
+# D-FINE has no dynamic query selection, so Dome's min/max_num_select 300/1500 is
+# replaced by a FIXED num_queries=1500 to match Dome's recall ceiling on AITOD.
+# (Lower to e.g. 500 if you want to trade recall for speed.)
+output_dir: ./output/dfine_s_aitod
+
+DFINE:
+  backbone: HGNetv2
+
+# ---- backbone: identical to Dome-S ----
+HGNetv2:
+  name: 'B0'
+  return_idx: [0, 1, 2, 3]   # +P2 (stride 4); B0 returns [64, 256, 512, 1024]
+  freeze_at: -1
+  freeze_norm: False
+  use_lab: True
+
+# ---- 4-level (P2-P5) encoder, S-scale, matched to Dome-S ----
+HybridEncoder:
+  in_channels: [64, 256, 512, 1024]
+  feat_strides: [4, 8, 16, 32]
+  use_encoder_idx: [3]        # AIFI on the lowest-res (P5) level
+  hidden_dim: 256
+  depth_mult: 0.34            # S scale
+  expansion: 0.5             # S scale
+
+# ---- decoder: S-scale (3 layers), 4 levels ----
+DFINETransformer:
+  num_layers: 3
+  eval_idx: -1
+  feat_channels: [256, 256, 256, 256]
+  feat_strides: [4, 8, 16, 32]
+  num_levels: 4
+  num_points: [4, 4, 4, 4]
+  num_queries: 500           # matches Dome-S max_num_select (dynamic 300-1500 ceiling)
+
+# Postprocessor must NOT re-cap below num_queries, else recall is bottlenecked again.
+DFINEPostProcessor:
+  num_top_queries: 500
+
+# ---- optimizer: identical to Dome-S-AITOD ----
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm|bn).*$'
+      lr: 0.00002
+    -
+      params: '^(?=.*backbone)(?=.*norm|bn).*$'
+      lr: 0.00002
+      weight_decay: 0.
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
+      weight_decay: 0.
+
+  lr: 0.0002
+  betas: [0.9, 0.999]
+  weight_decay: 0.000065
+
+# ---- schedule: identical to Dome-S-AITOD ----
+lr_scheduler:
+  type: MultiStepLR
+  milestones: [80, 120]
+  gamma: 0.8
+
+# Increase to search for the optimal ema
+epoches: 160
+train_dataloader:
+  dataset:
+    transforms:
+      policy:
+        epoch: 108
+  collate_fn:
+    stop_epoch: 108
+    ema_restart_decay: 0.9999
+    base_size_repeat: 2
