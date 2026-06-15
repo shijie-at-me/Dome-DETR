@@ -54,11 +54,20 @@ set -f          # no filename globbing (so list overrides like milestones=[36,60
 DATASET=${1:-aitod}               # aitod | visdrone
 SIZE=${2:-s}                      # s | m | l
 TYPE_ARG=${3:-}                   # optional: single variant name; empty = full sweep
+MODEL=${MODEL:-dfine}             # dfine | dome  (env knob; default DFINE-S)
 
 # --- normalize + validate ---------------------------------------------------
 dataset_l=$(echo "$DATASET" | tr '[:upper:]' '[:lower:]')
 size_l=$(echo "$SIZE" | tr '[:upper:]' '[:lower:]')
 size_u=$(echo "$SIZE" | tr '[:lower:]' '[:upper:]')
+model_l=$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')
+
+# criterion class whose aiiou_* keys the variant overrides target (model-specific)
+case "$model_l" in
+  dfine) CRIT=DFINECriterion ;;
+  dome)  CRIT=DomeCriterion ;;
+  *) echo "ERROR: MODEL must be 'dfine' or 'dome' (got '$MODEL')"; exit 1 ;;
+esac
 
 case "$dataset_l" in
   aitod)    dataset_proper="AITOD" ;;
@@ -79,17 +88,42 @@ esac
 BS=${BS:-8}
 case "$BS" in 8|16) ;; *) echo "ERROR: BS must be 8 or 16 (got '$BS')"; exit 1 ;; esac
 
-# --- auto-derived paths (match test.sh) -------------------------------------
-# BASE_CONFIG is always the canonical bs=8 file: it is the source of truth for
-# the epoch-coupled schedule (the bs16 wrapper does not redeclare those keys).
-BASE_CONFIG=configs/dome/Dome-${size_u}-${dataset_proper}.yml
-if [ "$BS" -eq 16 ]; then
-  # separate output tree so bs8/bs16 checkpoints never share a last.pth (auto-resume)
-  CONFIG=${CONFIG:-configs/dome/Dome-${size_u}-${dataset_proper}-bs16.yml}
-  OUT_ROOT=${OUT_ROOT:-output/aiiou-${size_l}-${dataset_l}-bs16}
+# --- auto-derived paths -----------------------------------------------------
+# BASE_CONFIG is the source of truth for the epoch-coupled schedule read below.
+if [ "$model_l" = "dome" ]; then
+  # Dome: canonical bs=8 file is the schedule source (bs16 wrapper inherits it).
+  BASE_CONFIG=configs/dome/Dome-${size_u}-${dataset_proper}.yml
+  if [ "$BS" -eq 16 ]; then
+    # separate output tree so bs8/bs16 checkpoints never share a last.pth (auto-resume)
+    CONFIG=${CONFIG:-configs/dome/Dome-${size_u}-${dataset_proper}-bs16.yml}
+    OUT_ROOT=${OUT_ROOT:-output/aiiou-${size_l}-${dataset_l}-bs16}
+  else
+    CONFIG=${CONFIG:-$BASE_CONFIG}
+    OUT_ROOT=${OUT_ROOT:-output/aiiou-${size_l}-${dataset_l}}
+  fi
 else
-  CONFIG=${CONFIG:-$BASE_CONFIG}
-  OUT_ROOT=${OUT_ROOT:-output/aiiou-${size_l}-${dataset_l}}
+  # D-FINE: the live leaf config lives under configs/dome/ (e.g.
+  # configs/dome/dfine_s_aitod.yml; schedule matched to Dome-S-AITOD). A legacy
+  # configs/dfine/ layout is also probed in case future configs land there.
+  # Resolve the canonical bs=8 leaf first — it is the schedule source of truth
+  # (the -bs16 wrapper only redeclares batch sizes + lrs).
+  base_leaf=""
+  for cand in \
+      "configs/dome/dfine_${size_l}_${dataset_l}.yml" \
+      "configs/dfine/dfine_${size_l}_${dataset_l}.yml" \
+      "configs/dfine/${dataset_l}/dfine_${size_l}_${dataset_l}.yml"; do
+    [ -f "$cand" ] && { base_leaf=$cand; break; }
+  done
+  base_leaf=${base_leaf:-configs/dome/dfine_${size_l}_${dataset_l}.yml}
+  BASE_CONFIG=$base_leaf       # bs8 leaf carries epoches/milestones/stop_epoch/policy inline
+  if [ "$BS" -eq 16 ]; then
+    # separate output tree so bs8/bs16 checkpoints never share a last.pth (auto-resume)
+    CONFIG=${CONFIG:-${base_leaf%.yml}-bs16.yml}
+    OUT_ROOT=${OUT_ROOT:-output/dfine-${size_l}-${dataset_l}-bs16}
+  else
+    CONFIG=${CONFIG:-$base_leaf}
+    OUT_ROOT=${OUT_ROOT:-output/dfine-${size_l}-${dataset_l}}
+  fi
 fi
 
 DEVICES=${DEVICES:-0,1}            # CUDA_VISIBLE_DEVICES
@@ -147,29 +181,41 @@ START_EVAL=${START_EVAL:-78}
 # --- read baseline schedule FROM THE CONFIG (needed for scaling / clamping) --
 SCHED_OV=""
 if [ -n "$EPOCHS" ] || [ "${START_EVAL:-0}" -gt 0 ]; then
-  # always read the schedule from BASE_CONFIG: the bs16 wrapper only redeclares
-  # batch sizes + lrs and inherits epoches/milestones/stop_epoch via __include__.
+  # epoches/stop_epoch/policy.epoch are inline in BASE_CONFIG (both Dome leaf and
+  # D-FINE leaf). milestones are inline only for Dome; D-FINE keeps them in an
+  # include (single value), so they're parsed best-effort and left unscaled if absent.
   base_ep=$(grep -E '^epoches:' "$BASE_CONFIG" | grep -oE '[0-9]+' | head -1)
-  base_m1=$(grep -E 'milestones:' "$BASE_CONFIG" | grep -oE '[0-9]+' | sed -n 1p)
-  base_m2=$(grep -E 'milestones:' "$BASE_CONFIG" | grep -oE '[0-9]+' | sed -n 2p)
   base_stop=$(grep -E 'stop_epoch:' "$BASE_CONFIG" | grep -oE '[0-9]+' | head -1)
   base_aug=$(awk '/policy:/{f=1} f&&/epoch:/{print $2; exit}' "$BASE_CONFIG")
   : "${base_aug:=$base_stop}"   # fall back to stop_epoch if policy.epoch absent
-  if [ -z "$base_ep" ] || [ -z "$base_m1" ] || [ -z "$base_m2" ] || [ -z "$base_stop" ]; then
-    echo "ERROR: could not parse baseline schedule from $BASE_CONFIG (epoches/milestones/stop_epoch)"; exit 1
+  if [ -z "$base_ep" ] || [ -z "$base_stop" ]; then
+    echo "ERROR: could not parse baseline schedule from $BASE_CONFIG (epoches/stop_epoch)"; exit 1
   fi
 fi
 
 # proportional schedule scaling when EPOCHS is set
 if [ -n "$EPOCHS" ]; then
   sc () { awk -v a="$1" -v e="$EPOCHS" -v b="$base_ep" 'BEGIN{printf "%d", int(a*e/b + 0.5)}'; }
-  M1=$(sc "$base_m1"); M2=$(sc "$base_m2"); STOP=$(sc "$base_stop"); AUG=$(sc "$base_aug")
-  SCHED_OV=" epoches=${EPOCHS} lr_scheduler.milestones=[${M1},${M2}]"
+  STOP=$(sc "$base_stop"); AUG=$(sc "$base_aug")
+  SCHED_OV=" epoches=${EPOCHS}"
+  # scale milestones only if inline in BASE_CONFIG (Dome: 2 values; tolerate 1)
+  base_m1=$(grep -E 'milestones:' "$BASE_CONFIG" | grep -oE '[0-9]+' | sed -n 1p)
+  base_m2=$(grep -E 'milestones:' "$BASE_CONFIG" | grep -oE '[0-9]+' | sed -n 2p)
+  if [ -n "$base_m1" ] && [ -n "$base_m2" ]; then
+    M1=$(sc "$base_m1"); M2=$(sc "$base_m2")
+    SCHED_OV="${SCHED_OV} lr_scheduler.milestones=[${M1},${M2}]"
+    ms_msg="milestones [${base_m1},${base_m2}] -> [${M1},${M2}]; "
+  elif [ -n "$base_m1" ]; then
+    M1=$(sc "$base_m1")
+    SCHED_OV="${SCHED_OV} lr_scheduler.milestones=[${M1}]"
+    ms_msg="milestones [${base_m1}] -> [${M1}]; "
+  else
+    ms_msg="milestones not inline in base config (left unscaled); "
+  fi
   SCHED_OV="${SCHED_OV} train_dataloader.dataset.transforms.policy.epoch=${AUG}"
   SCHED_OV="${SCHED_OV} train_dataloader.collate_fn.stop_epoch=${STOP}"
   echo "[sched] EPOCHS=${EPOCHS} scaled from config baseline ${base_ep}:"
-  echo "        milestones [${base_m1},${base_m2}] -> [${M1},${M2}];" \
-       "aug_stop ${base_aug} -> ${AUG}; collate stop_epoch ${base_stop} -> ${STOP}"
+  echo "        ${ms_msg}aug_stop ${base_aug} -> ${AUG}; collate stop_epoch ${base_stop} -> ${STOP}"
   eff_stop=$STOP
 else
   eff_stop=$base_stop
@@ -190,9 +236,9 @@ run_one () {
   local outdir="${OUT_ROOT}/${name}"
   mkdir -p "$outdir"
 
-  # build -u args: DomeCriterion-prefixed variant overrides + (unprefixed) schedule overrides
+  # build -u args: criterion-prefixed variant overrides + (unprefixed) schedule overrides
   local u_args=""
-  for kv in $overrides; do u_args="${u_args} DomeCriterion.${kv}"; done
+  for kv in $overrides; do u_args="${u_args} ${CRIT}.${kv}"; done
   u_args="${u_args}${SCHED_OV}"
 
   # auto-resume if a checkpoint exists
@@ -200,7 +246,7 @@ run_one () {
   [ -f "${outdir}/last.pth" ] && resume_arg="-r ${outdir}/last.pth"
 
   echo "============================================================"
-  echo "[$(date '+%F %T')] ${dataset_l}/${size_u} bs=${BS} variant=${name}"
+  echo "[$(date '+%F %T')] ${model_l}/${dataset_l}/${size_u} bs=${BS} variant=${name}"
   echo "  config:    ${CONFIG}"
   echo "  overrides: ${u_args}${resume_arg:+   (resume)}"
   echo "  outdir:    ${outdir}"
@@ -224,6 +270,11 @@ done
 
 echo
 echo "ALL VARIANTS DONE. Per-variant logs/checkpoints under ${OUT_ROOT}/<name>/."
-echo "Evaluate any variant with:  bash scripts/test.sh ${dataset_l} ${size_l} <name>"
+if [ "$model_l" = "dome" ]; then
+  echo "Evaluate any variant with:  bash scripts/test.sh ${dataset_l} ${size_l} <name>"
+else
+  echo "Evaluate any variant with:  CUDA_VISIBLE_DEVICES=${DEVICES} torchrun --nproc_per_node=${GPUS} \\"
+  echo "    train.py -c ${CONFIG} --test-only -r ${OUT_ROOT}/<name>/best_stg2.pth --output-dir ${OUT_ROOT}/<name>"
+fi
 echo "Collect final AP per variant, e.g.:"
 echo "    grep -hE 'Average Precision.*area=   all|aiiou|Epoch' ${OUT_ROOT}/*/train.log | tail"
