@@ -374,7 +374,7 @@ class DFINECriterion(nn.Module):
         self._clear_cache()
 
         # Get the matching union set across all decoder layers.
-        if "aux_outputs" in outputs:
+        if "aux_outputs" in outputs and self.training:
             indices_aux_list, cached_indices, cached_indices_enc = [], [], []
             for i, aux_outputs in enumerate(outputs["aux_outputs"] + [outputs["pre_outputs"]]):
                 indices_aux = self.matcher(aux_outputs, targets)["indices"]
@@ -394,7 +394,7 @@ class DFINECriterion(nn.Module):
                 torch.distributed.all_reduce(num_boxes_go)
             num_boxes_go = torch.clamp(num_boxes_go / get_world_size(), min=1).item()
         else:
-            assert "aux_outputs" in outputs, ""
+            assert not self.training, ""
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
@@ -416,7 +416,7 @@ class DFINECriterion(nn.Module):
             losses.update(l_dict)
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
-        if "aux_outputs" in outputs:
+        if "aux_outputs" in outputs and self.training:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 aux_outputs["up"], aux_outputs["reg_scale"] = outputs["up"], outputs["reg_scale"]
                 for loss in self.losses:
@@ -434,7 +434,7 @@ class DFINECriterion(nn.Module):
                     losses.update(l_dict)
 
         # In case of auxiliary traditional head output at first decoder layer.
-        if "pre_outputs" in outputs:
+        if "pre_outputs" in outputs and self.training:
             aux_outputs = outputs["pre_outputs"]
             for loss in self.losses:
                 indices_in = indices_go if loss in ["boxes", "local"] else cached_indices[-1]
@@ -449,7 +449,7 @@ class DFINECriterion(nn.Module):
                 losses.update(l_dict)
 
         # In case of encoder auxiliary losses.
-        if "enc_aux_outputs" in outputs:
+        if "enc_aux_outputs" in outputs and self.training:
             assert "enc_meta" in outputs, ""
             class_agnostic = outputs["enc_meta"]["class_agnostic"]
             if class_agnostic:
@@ -479,7 +479,7 @@ class DFINECriterion(nn.Module):
                 self.num_classes = orig_num_classes
 
         # In case of cdn auxiliary losses. For dfine
-        if "dn_outputs" in outputs:
+        if "dn_outputs" in outputs and self.training:
             assert "dn_meta" in outputs, ""
             indices_dn = self.get_cdn_matched_indices(outputs["dn_meta"], targets)
             dn_num_boxes = num_boxes * outputs["dn_meta"]["dn_num_group"]
