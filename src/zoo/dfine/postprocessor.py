@@ -23,7 +23,7 @@ class DFINEPostProcessor(nn.Module):
     __share__ = ["num_classes", "use_focal_loss", "num_top_queries", "remap_mscoco_category"]
 
     def __init__(
-        self, num_classes=80, use_focal_loss=True, num_top_queries=300, remap_mscoco_category=False
+        self, num_classes=80, use_focal_loss=True, num_top_queries=300, remap_mscoco_category=False, score_thresh=0.01
     ) -> None:
         super().__init__()
         self.use_focal_loss = use_focal_loss
@@ -31,6 +31,7 @@ class DFINEPostProcessor(nn.Module):
         self.num_classes = int(num_classes)
         self.remap_mscoco_category = remap_mscoco_category
         self.deploy_mode = False
+        self.score_thresh = score_thresh
 
     def extra_repr(self) -> str:
         return f"use_focal_loss={self.use_focal_loss}, num_classes={self.num_classes}, num_top_queries={self.num_top_queries}"
@@ -80,6 +81,13 @@ class DFINEPostProcessor(nn.Module):
 
         results = []
         for lab, box, sco in zip(labels, boxes, scores):
+            # Drop near-zero-score queries before they reach the COCO evaluator.
+            # On AITOD (maxDets=1500), keeping all num_top_queries detections per
+            # image inflates per-image evalImg match arrays and OOMs the distributed
+            # all_gather. A low thresh (0.01) is ~metric-neutral. Mirrors DomePostProcessor.
+            if self.score_thresh > 0:
+                keep = sco > self.score_thresh
+                lab, box, sco = lab[keep], box[keep], sco[keep]
             result = dict(labels=lab, boxes=box, scores=sco)
             results.append(result)
 

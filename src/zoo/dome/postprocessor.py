@@ -23,7 +23,7 @@ class DomePostProcessor(nn.Module):
     __share__ = ["num_classes", "use_focal_loss", "num_top_queries", "remap_mscoco_category"]
 
     def __init__(
-        self, num_classes=80, use_focal_loss=True, num_top_queries=1500, remap_mscoco_category=False, score_thresh=0.1
+        self, num_classes=80, use_focal_loss=True, num_top_queries=1500, remap_mscoco_category=False, score_thresh=0.01
     ) -> None:
         super().__init__()
         self.use_focal_loss = use_focal_loss
@@ -85,6 +85,14 @@ class DomePostProcessor(nn.Module):
 
         results = []
         for lab, box, sco in zip(labels, boxes, scores):
+            # Drop near-zero-score queries before they reach the COCO evaluator.
+            # forward() emits the full query set (line above sets num_top_queries =
+            # logits.shape[1], up to 1500), and AITOD eval keeps maxDets=1500, so the
+            # unfiltered junk inflates per-image evalImg match arrays and OOMs the
+            # distributed all_gather. A low thresh (0.01) is ~metric-neutral.
+            if self.score_thresh > 0:
+                keep = sco > self.score_thresh
+                lab, box, sco = lab[keep], box[keep], sco[keep]
             result = dict(labels=lab, boxes=box, scores=sco)
             results.append(result)
 
