@@ -471,7 +471,11 @@ class DFINEHybridEncoder(nn.Module):
             feat_low = proj_feats[idx - 1]
             feat_heigh = self.lateral_convs[len(self.in_channels) - 1 - idx](feat_heigh)
             inner_outs[0] = feat_heigh
-            upsample_feat = F.interpolate(feat_heigh, scale_factor=2.0, mode="nearest")
+            # Upsample to feat_low's exact size (not a rigid 2x): with the added P2
+            # (stride-4) level, non-multiple-of-32 multiscale inputs make adjacent
+            # pyramid levels differ by an off-by-one (e.g. 56 vs 55), so scale_factor=2
+            # mismatches at concat. Matches DomeHybridEncoder's size-based upsample.
+            upsample_feat = F.interpolate(feat_heigh, size=(feat_low.shape[2], feat_low.shape[3]), mode="bilinear", align_corners=True)
             inner_out = self.fpn_blocks[len(self.in_channels) - 1 - idx](
                 torch.concat([upsample_feat, feat_low], dim=1)
             )
