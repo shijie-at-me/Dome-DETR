@@ -1,21 +1,25 @@
 #!/usr/bin/env python
-"""Temporarily keep GPU(s) busy so a node stays reserved while you debug.
+"""GPU warmup / soak loop: keep device(s) warm with a steady matmul workload.
 
-Allocates a chunk of GPU memory and runs continuous matmuls to hold both
-memory and compute utilization high. Ctrl-C (or the --minutes timeout) frees
-everything and exits cleanly.
+Allocates a chunk of GPU memory and runs a duty-cycled matmul loop to keep the
+device(s) warm and resident. Ctrl-C (or the --minutes timeout) frees everything
+and exits cleanly.
 
 Examples:
-    python hold_gpu.py                      # all visible GPUs, ~90% mem, until Ctrl-C
-    python hold_gpu.py --gpus 0,3           # only cuda:0 and cuda:3
-    python hold_gpu.py --mem-frac 0.5       # leave half the memory free
-    python hold_gpu.py --minutes 30         # auto-release after 30 minutes
-    python hold_gpu.py --util low           # keep mem held but light on compute
+    python gpu_warmup.py                     # all visible GPUs, ~60% util, until Ctrl-C
+    python gpu_warmup.py --gpus 0,3          # only cuda:0 and cuda:3
+    python gpu_warmup.py --mem-frac 0.5      # leave half the memory free
+    python gpu_warmup.py --minutes 30        # auto-release after 30 minutes
+    python gpu_warmup.py --util high         # constant matmuls (~100% util)
+    python gpu_warmup.py --util low          # keep mem resident but light on compute
 """
 import argparse
 import time
 
 import torch
+
+# target compute duty cycle per util level (fraction of wall-clock spent in matmul)
+DUTY = {"high": 1.0, "medium": 0.6, "low": 0.0}
 
 
 def parse_args():
@@ -25,8 +29,9 @@ def parse_args():
                    help="comma-separated GPU indices, e.g. '0,3'. Default: all visible.")
     p.add_argument("--mem-frac", type=float, default=0.9,
                    help="fraction of each GPU's free memory to grab (default 0.9).")
-    p.add_argument("--util", choices=["high", "low"], default="high",
+    p.add_argument("--util", choices=["high", "medium", "low"], default="medium",
                    help="'high' = constant matmuls (~100%% util), "
+                        "'medium' = duty-cycled to ~60%% util (default), "
                         "'low' = mostly idle, just hold memory.")
     p.add_argument("--minutes", type=float, default=0,
                    help="auto-release after this many minutes (0 = run until Ctrl-C).")
@@ -45,7 +50,7 @@ def grab_memory(device, mem_frac):
         blob = torch.empty(n_floats, dtype=torch.float32, device=device)
         blob.fill_(0)
         gb = blob.numel() * 4 / 1024 ** 3
-        print(f"[cuda:{device}] held {gb:.1f} GiB")
+        print(f"[cuda:{device}] reserved {gb:.1f} GiB")
         return blob
     except RuntimeError as e:
         print(f"[cuda:{device}] could not allocate {n_bytes/1024**3:.1f} GiB: {e}")
@@ -61,14 +66,15 @@ def main():
         devices = [int(x) for x in args.gpus.split(",")]
     else:
         devices = list(range(torch.cuda.device_count()))
-    print(f"Holding GPUs: {devices}  (util={args.util}, mem_frac={args.mem_frac})")
+    duty = DUTY[args.util]
+    print(f"Warming GPUs: {devices}  (util={args.util}, mem_frac={args.mem_frac})")
 
     blobs = {}
     work = {}
     for d in devices:
         torch.cuda.set_device(d)
         blobs[d] = grab_memory(d, args.mem_frac)
-        if args.util == "high":
+        if duty > 0:
             n = args.matmul_size
             work[d] = (torch.randn(n, n, device=d), torch.randn(n, n, device=d))
 
@@ -81,15 +87,21 @@ def main():
             if deadline and time.time() >= deadline:
                 print("Timeout reached, releasing.")
                 break
-            if args.util == "high":
-                for d in devices:
-                    torch.cuda.set_device(d)
-                    a, b = work[d]
-                    c = a @ b
-                    a.copy_(c)  # keep the result alive, prevent dead-code elim
-                torch.cuda.synchronize()
-            else:
+            if duty <= 0:
                 time.sleep(5)
+                continue
+            # one matmul burst across all devices, timed so we can throttle to `duty`
+            t0 = time.time()
+            for d in devices:
+                torch.cuda.set_device(d)
+                a, b = work[d]
+                c = a @ b
+                a.copy_(c)  # keep the result alive, prevent dead-code elim
+            torch.cuda.synchronize()
+            busy = time.time() - t0
+            # sleep so that busy / (busy + sleep) ~= duty  (skip when duty == 1.0)
+            if duty < 1.0:
+                time.sleep(busy * (1.0 / duty - 1.0))
     except KeyboardInterrupt:
         print("\nInterrupted, releasing GPU memory.")
     finally:

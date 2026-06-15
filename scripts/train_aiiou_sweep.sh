@@ -278,3 +278,25 @@ else
 fi
 echo "Collect final AP per variant, e.g.:"
 echo "    grep -hE 'Average Precision.*area=   all|aiiou|Epoch' ${OUT_ROOT}/*/train.log | tail"
+
+# --- post-sweep GPU warmup --------------------------------------------------
+# After all variants finish, keep the SAME GPUs warm (mem + a steady duty-cycled
+# matmul load) until you Ctrl-C or the timeout hits. Knobs (env):
+#   WARMUP=0               disable entirely (just exit after the sweep)
+#   WARMUP_MINUTES=N       auto-release after N minutes (default 0 = until Ctrl-C)
+#   WARMUP_MEM=0.9         fraction of free mem to reserve (default 0.9)
+#   WARMUP_UTIL=high|medium|low   medium ~60%% util (default)
+WARMUP=${WARMUP:-1}
+if [ "$WARMUP" != "0" ]; then
+  WARMUP_MINUTES=${WARMUP_MINUTES:-0}
+  WARMUP_MEM=${WARMUP_MEM:-0.9}
+  WARMUP_UTIL=${WARMUP_UTIL:-medium}
+  echo
+  echo "============================================================"
+  echo "[$(date '+%F %T')] sweep done -> GPU warmup on ${DEVICES}."
+  echo "  WARMUP_MINUTES=${WARMUP_MINUTES} (0=until Ctrl-C)  WARMUP_UTIL=${WARMUP_UTIL}  WARMUP_MEM=${WARMUP_MEM}"
+  echo "  Set WARMUP=0 to skip this. Press Ctrl-C to release and exit."
+  echo "============================================================"
+  CUDA_VISIBLE_DEVICES=${DEVICES} python scripts/gpu_warmup.py \
+      --mem-frac "${WARMUP_MEM}" --util "${WARMUP_UTIL}" --minutes "${WARMUP_MINUTES}"
+fi
