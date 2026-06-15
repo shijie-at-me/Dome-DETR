@@ -102,14 +102,26 @@ class DetSolver(BaseSolver):
             self.last_epoch += 1
 
             if self.output_dir:
-                # Always write last.pth every epoch (incl. stage-2) so training is
-                # resumable from the exact last epoch, not only from best_stg2.pth.
+                # last.pth: always overwritten every epoch (incl. stage-2) so training
+                # is resumable from the exact last epoch, not only from best_stg2.pth.
                 checkpoint_paths = [self.output_dir / "last.pth"]
-                # extra checkpoint before LR drop and every 100 epochs
-                if (epoch + 1) % args.checkpoint_freq == 0:
+                keep_n = getattr(args, "keep_the_latest", 0) or 0
+                if keep_n > 0:
+                    # rolling per-epoch archive: save every epoch, prune to latest keep_n
+                    checkpoint_paths.append(self.output_dir / f"checkpoint{epoch:04}.pth")
+                elif (epoch + 1) % args.checkpoint_freq == 0:
+                    # legacy: archive only every checkpoint_freq epochs (no pruning)
                     checkpoint_paths.append(self.output_dir / f"checkpoint{epoch:04}.pth")
                 for checkpoint_path in checkpoint_paths:
                     dist_utils.save_on_master(self.state_dict(), checkpoint_path)
+                # keep only the latest keep_n rolling checkpoints (master only)
+                if keep_n > 0 and dist_utils.is_main_process():
+                    rolling = sorted(self.output_dir.glob("checkpoint[0-9]*.pth"))
+                    for old in rolling[:-keep_n]:
+                        try:
+                            old.unlink()
+                        except OSError:
+                            pass
 
             module = self.ema.module if self.ema else self.model
 

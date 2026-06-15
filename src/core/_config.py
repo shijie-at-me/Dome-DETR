@@ -70,6 +70,10 @@ class BaseConfig(object):
         self.seed: int = None
         self.print_freq: int = None
         self.checkpoint_freq: int = 1
+        # keep_the_latest > 0: save a per-epoch rolling archive (checkpoint{epoch}.pth)
+        # every epoch and keep only the latest N. 0 = disabled (fall back to saving
+        # every checkpoint_freq epochs with no pruning).
+        self.keep_the_latest: int = 0
         self.start_eval: int = 0  # skip validation before this epoch (must be < stop_epoch); 0 = eval every epoch
         self.output_dir: str = None
         self.summary_dir: str = None

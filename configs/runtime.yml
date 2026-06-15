@@ -1,6 +1,7 @@
 print_freq: 100
 output_dir: './logs'
 checkpoint_freq: 12
+keep_the_latest: 10   # save checkpoint{epoch}.pth every epoch, keep only the latest 10 (0 = old behavior)
 
 
 sync_bn: True
