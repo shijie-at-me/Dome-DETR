@@ -33,7 +33,7 @@ HGNetv2:
   use_lab: True
 
 # ---- 4-level (P2-P5) encoder, S-scale, matched to Dome-S ----
-HybridEncoder:
+DFINEHybridEncoder:
   in_channels: [64, 256, 512, 1024]
   feat_strides: [4, 8, 16, 32]
   use_encoder_idx: [3]        # AIFI on the lowest-res (P5) level

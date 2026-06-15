@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from ...core import register
 from .utils import get_activation
 
-__all__ = ["HybridEncoder"]
+__all__ = ["DFINEHybridEncoder"]
 
 
 class ConvNormLayer_fuse(nn.Module):
@@ -310,7 +310,7 @@ class TransformerEncoder(nn.Module):
 
 
 @register()
-class HybridEncoder(nn.Module):
+class DFINEHybridEncoder(nn.Module):
     __share__ = [
         "eval_spatial_size",
     ]

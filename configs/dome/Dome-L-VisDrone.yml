@@ -29,7 +29,7 @@ DomeTransformer:
   min_num_select: 250
   max_num_select: 500
 
-HybridEncoder:
+DomeHybridEncoder:
   in_channels: [128, 512, 1024, 2048]
   feat_strides: [4, 8, 16, 32]
   use_encoder_idx: [3] # Only not deformable

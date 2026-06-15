@@ -28,7 +28,7 @@ import os
 SAVE_INTERMEDIATE_VISUALIZE_RESULT = os.environ.get('SAVE_INTERMEDIATE_VISUALIZE_RESULT', 'False') == 'True'
 
 
-__all__ = ["HybridEncoder"]
+__all__ = ["DomeHybridEncoder"]
 
 
 class ConvNormLayer_fuse(nn.Module):
@@ -253,7 +253,7 @@ class CSPLayer(nn.Module):
 
 
 @register()
-class HybridEncoder(nn.Module):
+class DomeHybridEncoder(nn.Module):
     __share__ = [
         "eval_spatial_size",
     ]
