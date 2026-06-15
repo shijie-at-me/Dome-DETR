@@ -75,8 +75,18 @@ def main():
         torch.cuda.set_device(d)
         blobs[d] = grab_memory(d, args.mem_frac)
         if duty > 0:
+            # allocate the matmul pair out of the headroom; shrink on OOM so a
+            # tight GPU still holds memory (blob) even if it can't run matmuls.
             n = args.matmul_size
-            work[d] = (torch.randn(n, n, device=d), torch.randn(n, n, device=d))
+            while n >= 512:
+                try:
+                    work[d] = (torch.randn(n, n, device=d), torch.randn(n, n, device=d))
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    n //= 2
+            if d not in work:
+                print(f"[cuda:{d}] no room for matmul workspace; holding memory only.")
 
     deadline = time.time() + args.minutes * 60 if args.minutes > 0 else None
     print("Running. Press Ctrl-C to release." if deadline is None
@@ -87,16 +97,24 @@ def main():
             if deadline and time.time() >= deadline:
                 print("Timeout reached, releasing.")
                 break
-            if duty <= 0:
+            if duty <= 0 or not work:
                 time.sleep(5)
                 continue
             # one matmul burst across all devices, timed so we can throttle to `duty`
             t0 = time.time()
             for d in devices:
+                if d not in work:
+                    continue
                 torch.cuda.set_device(d)
                 a, b = work[d]
-                c = a @ b
-                a.copy_(c)  # keep the result alive, prevent dead-code elim
+                try:
+                    c = a @ b
+                    a.copy_(c)  # keep the result alive, prevent dead-code elim
+                except torch.cuda.OutOfMemoryError:
+                    # never crash: drop this device to hold-only, keep its blob alive
+                    print(f"[cuda:{d}] OOM during matmul; dropping to hold-only.")
+                    work.pop(d, None)
+                    torch.cuda.empty_cache()
             torch.cuda.synchronize()
             busy = time.time() - t0
             # sleep so that busy / (busy + sleep) ~= duty  (skip when duty == 1.0)
