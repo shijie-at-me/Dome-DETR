@@ -4,3 +4,4 @@ Copyright(c) 2024 The D-FINE Authors. All Rights Reserved.
 """
 
 from . import dome
+from . import dfine
