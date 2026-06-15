@@ -180,7 +180,7 @@ def evaluate(
     # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
     
     # For defe Accuracy calculation
-    if model.encoder.use_defe:
+    if getattr(model.encoder, "use_defe", False):
         total_defe_samples = 0
         ample_defe_predictions = 0
         total_anchor_num = 0
@@ -255,7 +255,7 @@ def evaluate(
                     })
                 print(f"[recovered] {len(predictions)} predictions from coco_evaluator")
 
-            if model.encoder.use_defe:
+            if getattr(model.encoder, "use_defe", False):
                 # For defe Ample Rate calculation
                 pred_defe = outputs['batch_queries_num'][0]
                 if pred_defe >= targets[0]['labels'].shape[0]:
@@ -269,7 +269,7 @@ def evaluate(
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
 
-    if model.encoder.use_defe:
+    if getattr(model.encoder, "use_defe", False):
         print("defe Ample Rate:", ample_defe_predictions / total_defe_samples)
         print("defe Average Anchor Number:", total_anchor_num / total_defe_samples)
 
