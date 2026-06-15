@@ -176,7 +176,7 @@ fi
 # 90 still leaves ~30 epochs of stage-1 eval margin below stop_epoch (108) to
 # robustly capture best_stg1. Scales with EPOCHS and is clamped below stop_epoch
 # so best_stg1 is still produced and all of stage-2 is evaluated. 0 = off.
-START_EVAL=${START_EVAL:-78}
+START_EVAL=${START_EVAL:-80}
 
 # --- read baseline schedule FROM THE CONFIG (needed for scaling / clamping) --
 SCHED_OV=""
