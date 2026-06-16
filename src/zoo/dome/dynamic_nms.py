@@ -3,6 +3,7 @@ Dome-DETR: Dome-DETR: DETR with Density-Oriented Feature-Query Manipulation for 
 Copyright (c) 2025 The Dome-DETR Authors. All Rights Reserved.
 '''
 
+import numpy as np
 import torch
 from src.zoo.dome.box_ops import box_iou
 
@@ -52,12 +53,17 @@ def _per_class_dynamic_nms_vectorized(boxes, scores, iou_thresholds):
     order = scores.argsort(descending=True)
     boxes = boxes[order]
     thresholds = iou_thresholds[order]
-    
-    # 预计算所有框之间的 IoU 矩阵（对称矩阵）
+
+    # 预计算所有框之间的 IoU 矩阵（GPU 上一次算好），随后整体搬到 CPU。
+    # 贪心抑制是顺序依赖的，无法向量化；之前在 GPU 张量上循环，每次迭代的
+    # `if not keep_flags[i]` 都会把一个标量同步回 CPU，~num 次/类强制 GPU 同步，
+    # 是 eval 的主要瓶颈。改在 numpy 上做这层循环（语义完全一致），消除同步。
     iou_matrix, _ = box_iou(boxes, boxes)
-    
+    iou_np = iou_matrix.cpu().numpy()
+    thr_np = thresholds.cpu().numpy()
+
     num = boxes.shape[0]
-    keep_flags = torch.ones(num, dtype=torch.bool, device=boxes.device)
+    keep_flags = np.ones(num, dtype=bool)
     keep = []
     for i in range(num):
         if not keep_flags[i]:
@@ -66,8 +72,7 @@ def _per_class_dynamic_nms_vectorized(boxes, scores, iou_thresholds):
         # 对于排序后位于 i 后面的所有框，如果 IoU 大于等于当前框的动态阈值，则置为 False
         # 注意：这里仅比较后面的框，避免重复判断
         if i < num - 1:
-            # mask 指示第 i 框与后续各框的 IoU 是否超过阈值 thresholds[i]
-            mask = iou_matrix[i, (i+1):] >= thresholds[i]
-            keep_flags[(i+1):] &= ~mask
+            keep_flags[i + 1:] &= ~(iou_np[i, i + 1:] >= thr_np[i])
     # 返回在原始排序中的索引，再映射回原始索引
-    return order[torch.tensor(keep, device=boxes.device)]
+    keep_t = torch.as_tensor(keep, dtype=torch.long, device=boxes.device)
+    return order[keep_t]

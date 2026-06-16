@@ -199,7 +199,10 @@ def evaluate(
             file_names = [coco.loadImgs(id)[0]['file_name'] for id in image_ids]
 
             outputs = model(samples, targets=None)
-            criterion(outputs, targets)
+
+            if SAVE_TEST_VISUALIZE_RESULT:
+                criterion(outputs, targets)
+
             orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
             results = postprocessor(outputs, orig_target_sizes)
 
