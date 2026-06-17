@@ -32,7 +32,8 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
     __share__ = ["remap_mscoco_category"]
 
     def __init__(
-        self, img_folder, ann_file, transforms, return_masks=False, remap_mscoco_category=False
+        self, img_folder, ann_file, transforms, return_masks=False, remap_mscoco_category=False,
+        repeat=1,
     ):
         img_folder = os.path.expanduser(img_folder)
         ann_file = os.path.expanduser(ann_file)
@@ -43,6 +44,16 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         self.ann_file = ann_file
         self.return_masks = return_masks
         self.remap_mscoco_category = remap_mscoco_category
+        # `repeat` virtually lengthens the dataset by an integer factor: each epoch
+        # iterates the underlying images `repeat` times (with fresh random augs per
+        # access), giving `repeat`x the gradient updates / sampler length per epoch.
+        # Useful when the real set is tiny so an "epoch" is otherwise only a handful
+        # of steps and per-epoch eval is noisy. Only affects __len__ / indexing;
+        # the COCO image ids and the evaluator are untouched (val should keep repeat=1).
+        self.repeat = max(1, int(repeat))
+
+    def __len__(self):
+        return len(self.ids) * self.repeat
 
     def __getitem__(self, idx):
         img, target = self.load_item(idx)
@@ -51,6 +62,7 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         return img, target
 
     def load_item(self, idx):
+        idx = idx % len(self.ids)   # fold virtual (repeated) indices back onto real images
         image, target = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
         target = {"image_id": image_id, "annotations": target}

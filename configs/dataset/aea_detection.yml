@@ -14,6 +14,7 @@ train_dataloader:
     img_folder: "~/Data/shijli/datasets/AEA/images/train"
     ann_file: "~/Data/shijli/datasets/AEA/annotations/train_coco.json"
     return_masks: False
+    repeat: 1   # tiny set: loop each image 10x/epoch -> 10x gradient steps/epoch (tune me)
     transforms:
       type: Compose
       ops: ~
