@@ -59,8 +59,8 @@ def _per_class_dynamic_nms_vectorized(boxes, scores, iou_thresholds):
     # `if not keep_flags[i]` 都会把一个标量同步回 CPU，~num 次/类强制 GPU 同步，
     # 是 eval 的主要瓶颈。改在 numpy 上做这层循环（语义完全一致），消除同步。
     iou_matrix, _ = box_iou(boxes, boxes)
-    iou_np = iou_matrix.cpu().numpy()
-    thr_np = thresholds.cpu().numpy()
+    iou_np = iou_matrix.detach().cpu().numpy()
+    thr_np = thresholds.detach().cpu().numpy()
 
     num = boxes.shape[0]
     keep_flags = np.ones(num, dtype=bool)
