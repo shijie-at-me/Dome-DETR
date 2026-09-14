@@ -1,10 +1,8 @@
-# AI-TOD ablation, row 2 of 6: the D-FINE-S baseline plus the stride-2 fine level (switch 1 of
-# include/ours.yml). Rows 3 to 5 add the other switches one at a time on top of this file, all
-# at the baseline's fixed 300 queries; row 6, DFine-S-AITOD-Ours.yml, adds the per-image query
-# budget last, so the last step is the budget's own value and rows 2 to 5 train without the
-# dense tiles' 1500-query batches. The cell anchors of ours.yml come in here as well: on the
-# square tiles they equal the baseline's at test time and differ by the multi-scale draw alone
-# in training.
+# The stride study, full fine level: the D-FINE-S baseline plus the stride-2 fine level with its
+# two depthwise blocks, at the baseline's fixed 300 queries. Against DFine-S-AITOD-2b-fine-light
+# it settles the fine_blocks the ladder's row 3 and include/ours.yml carry; against the baseline
+# it is also the fine level's value without the query budget, which the ladder measures with it.
+# Not a row of the ladder (that is baseline, budget, fine, min-cells, enc-quality, Ours).
 
 __include__: ['../DFine-S-AITOD.yml']
 

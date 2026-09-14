@@ -1,0 +1,11 @@
+# AI-TOD ablation, row 5 of 6: row 4 plus the encoder's quality target from the decoder's final
+# box (switch 3 of include/ours.yml). This is DFine-S-AITOD-Ours.yml without the null entry, so
+# row 6 minus this row is the null entry's own value.
+
+__include__: ['./DFine-S-AITOD-4-min-cells.yml']
+
+output_dir: ./outputs/ablation/aitod_s_5_enc_quality
+
+DomeCriterion:
+  enc_quality_source: final
+  dec_quality_source: own

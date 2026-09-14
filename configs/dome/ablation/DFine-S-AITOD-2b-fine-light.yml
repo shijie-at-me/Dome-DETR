@@ -1,8 +1,8 @@
-# AI-TOD ablation, row 2b: row 2 with the light fine level, the two depthwise blocks left out
-# (fine_blocks 0): the level is the stem map through a 1x1 plus the stride-4 level's semantics
-# through a 1x1 and upsampled, nothing more. Against row 2 it says what the blocks pay for. On
-# the 5090 at batch 8, 800x800: the full fine level costs 18% of the step and 2.9 GB over the
-# baseline, this one 6% and 1.1 GB (the sampling points cost nothing measurable).
+# The stride study, light fine level: the run above with the two depthwise blocks left out
+# (fine_blocks 0), so the level is the stem map through a 1x1 plus the stride-4 level's semantics
+# through a 1x1 and upsampled, nothing more. Against the full level it says what the blocks pay
+# for. On the 5090 at batch 8, 800x800: the full fine level costs 18% of the step and 2.9 GB over
+# the baseline, this one 6% and 1.1 GB (the sampling points cost nothing measurable).
 
 __include__: ['./DFine-S-AITOD-2-fine.yml']
 

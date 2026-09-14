@@ -1,0 +1,21 @@
+# AI-TOD ablation, row 3 of 6: row 2 plus the stride-2 fine level (switch 1 of include/ours.yml).
+#
+# fine_blocks is the value the stride study settles (aitod_s_2_fine against aitod_s_2b_fine_light,
+# both at the baseline's fixed 300 queries): 2 for the full level, 0 for the light one. Keep it
+# equal to include/ours.yml's, or row 6 measures the block count as well as the null entry.
+
+__include__: ['./DFine-S-AITOD-2-budget.yml']
+
+output_dir: ./outputs/ablation/aitod_s_3_fine
+
+HGNetv2:
+  return_stem: True
+
+HybridEncoder:
+  fine_in_channels: 32
+  fine_dim: 64
+  fine_blocks: 2
+
+DFINETransformer:
+  fine_channels: 64
+  num_points: [6, 6, 4, 4, 4]

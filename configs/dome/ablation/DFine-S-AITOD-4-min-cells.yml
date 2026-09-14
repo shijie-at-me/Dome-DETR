@@ -1,0 +1,8 @@
+# AI-TOD ablation, row 4 of 6: row 3 plus the sampling radius floor (switch 2 of include/ours.yml).
+
+__include__: ['./DFine-S-AITOD-3-fine.yml']
+
+output_dir: ./outputs/ablation/aitod_s_4_min_cells
+
+DFINETransformer:
+  min_sample_cells: 1

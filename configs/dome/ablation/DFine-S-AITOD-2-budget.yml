@@ -1,0 +1,30 @@
+# AI-TOD ablation, row 2 of 6: the D-FINE-S baseline plus the per-image query budget (the
+# threshold rule and the grouped batches of DFine-S-AITOD-Ours.yml). Rows 3 to 5 add the
+# switches of include/ours.yml one at a time on top of this file; row 6 is
+# DFine-S-AITOD-Ours.yml, whose last step is the null entry.
+#
+# The budget goes first because the tiles reach 2667 objects and a fixed 300 queries starves the
+# dense ones: every later switch is then measured on a model that is not query-limited, which is
+# what their value in the final model is. The cell anchors of ours.yml come in here as well: on
+# the square tiles they equal the baseline's at test time and differ by the multi-scale draw
+# alone in training.
+
+__include__: ['../DFine-S-AITOD.yml']
+
+output_dir: ./outputs/ablation/aitod_s_2_budget
+
+DFINETransformer:
+  anchor_cells: 10
+  # the tokens the encoder scores above 0.4, plus a margin of 200 for the duplicates and
+  # background candidates the matching needs, rounded up to 100, 300 at least and 1500 at most;
+  # in training the ground-truth count stands in for the token count
+  query_budget: threshold
+  count_threshold: 0.4
+  count_margin: 200
+  count_round: 100
+  count_range: [300, 1500]
+  count_train_budget: gt
+
+train_dataloader:
+  # the batches grouped by object count in the budget's steps of 100, so a batch pads nothing
+  group_by_count: {edges: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300]}
