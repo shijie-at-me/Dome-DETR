@@ -1,0 +1,17 @@
+# AI-TOD ablation, row 3 of 6: row 2 plus the encoder's quality target from the decoder's final
+# box (switch 3 of include/ours.yml).
+#
+# It comes straight after the budget because it changes the very number the budget reads: the
+# encoder's score stops predicting the IoU of its own proposal and starts predicting the IoU the
+# decoder ends up at, so the score distribution the threshold sits in is re-standardised. The
+# threshold stays at row 2's 0.15, one switch to the row being the point of the ladder; once this
+# row has trained, tools/analysis/encoder_scores.py on it says whether 0.15 still sits below the
+# cliff, and rows 4 to 6 inherit whatever that settles.
+
+__include__: ['./DFine-S-AITOD-2-budget.yml']
+
+output_dir: ./outputs/ablation/aitod_s_3_enc_quality
+
+DomeCriterion:
+  enc_quality_source: final
+  dec_quality_source: own

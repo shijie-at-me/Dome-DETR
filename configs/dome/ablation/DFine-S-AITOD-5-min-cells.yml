@@ -1,0 +1,10 @@
+# AI-TOD ablation, row 5 of 6: row 4 plus the sampling radius floor (switch 2 of include/ours.yml).
+# This is DFine-S-AITOD-Ours.yml without the null entry, so row 6 minus this row is the null
+# entry's own value.
+
+__include__: ['./DFine-S-AITOD-4-fine.yml']
+
+output_dir: ./outputs/ablation/aitod_s_5_min_cells
+
+DFINETransformer:
+  min_sample_cells: 1
