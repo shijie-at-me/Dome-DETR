@@ -115,6 +115,7 @@ class MSDeformableAttention(nn.Module):
         offset_scale=0.5,
         min_sample_cells=0.0,
         fine_dim=0,
+        fine_key_aware=False,
         null_point=False,
     ):
         super().__init__()
@@ -150,12 +151,19 @@ class MSDeformableAttention(nn.Module):
             self.null_value = nn.Parameter(torch.zeros(num_heads, self.head_dim))
 
         self.fine_dim = fine_dim
+        self.fine_key_aware = fine_key_aware and fine_dim > 0
         if fine_dim > 0:
             assert method == "default", "a raw fine level needs bilinear sampling"
             # per head: fine_dim -> head_dim, on the weighted sum of the head's fine samples
             # (no bias: the output projection's covers it, and a bias here would not commute with
             # the zero padding outside the map and the attention weights' sum below 1)
             self.fine_lift = nn.Parameter(torch.empty(num_heads, fine_dim, self.head_dim))
+        if self.fine_key_aware:
+            # the fine level's logits read what was sampled: a per-head key of every sample and a
+            # per-head query, their scaled dot product added to the query-predicted logit. The key
+            # starts at zero, so the layer begins exactly where it begins without this
+            self.fine_key = nn.Parameter(torch.zeros(num_heads, fine_dim, self.head_dim))
+            self.fine_query = nn.Linear(embed_dim, embed_dim)
 
         self.ms_deformable_attn_core = functools.partial(ms_deformable_attention_core, method=self.method)
 
@@ -182,23 +190,48 @@ class MSDeformableAttention(nn.Module):
         if self.fine_dim > 0:
             for head in range(self.num_heads):
                 init.xavier_uniform_(self.fine_lift.data[head])
+        if self.fine_key_aware:
+            init.xavier_uniform_(self.fine_query.weight)
+            init.constant_(self.fine_query.bias, 0)
+            init.constant_(self.fine_key, 0)  # zero logits at first, an unchanged softmax
 
-    def _read_fine(self, value, hw, sampling_locations, attention_weights):
+    def _sample_fine(self, value, hw, sampling_locations):
         """
-        Every head's weighted sum of its samples of the raw fine level ``value`` ``[bs, fine_dim,
-        h * w]`` at ``sampling_locations`` ``[bs, len_q, heads, P, 2]`` (in [0, 1]) with
-        ``attention_weights`` ``[bs, len_q, heads, P]``, lifted per head to ``[bs, len_q, C]``.
-        Eight kernels, no einsum: the map is sampled once for all heads (their points are one
-        long grid, written out contiguously by the scaling), the weighted sum is a multiply and
-        a reduction as in the core, and the lift is one batched matmul in fp32 like the sampling
-        (with the one transposition copy it needs) and a copy into the output layout.
+        The raw fine level ``value`` ``[bs, fine_dim, h * w]`` sampled at ``sampling_locations``
+        ``[bs, len_q, heads, P, 2]`` (in [0, 1]), as ``[bs, fine_dim, len_q, heads, P]``. The map
+        is sampled once for all heads: their points are one long grid, written out contiguously
+        by the scaling.
         """
         bs, len_q, heads, p, _ = sampling_locations.shape
         h, w = hw
         grid = (2 * sampling_locations - 1).reshape(bs, len_q * heads * p, 1, 2)
-        samples = F.grid_sample(
+        return F.grid_sample(
             value.view(bs, self.fine_dim, h, w), grid, mode="bilinear", padding_mode="zeros", align_corners=False
         ).view(bs, self.fine_dim, len_q, heads, p)
+
+    def _fine_logits(self, samples, query):
+        """
+        The scaled dot product of every head's query with the key of each of its fine samples,
+        ``[bs, len_q, heads, P]``. Without it a head's weights come from the query alone and
+        cannot tell an informative sample from a background one; the probes found a head's six
+        fine points reading features only 0.61 alike yet carrying 4.6 of 6 effective points.
+        """
+        bs, _, len_q, heads, p = samples.shape
+        with torch.autocast(device_type=samples.device.type, enabled=False):
+            flat = samples.float().permute(0, 3, 2, 4, 1).reshape(bs, heads, len_q * p, self.fine_dim)
+            keys = torch.matmul(flat, self.fine_key).view(bs, heads, len_q, p, self.head_dim)
+        q = self.fine_query(query).view(bs, len_q, heads, 1, self.head_dim).transpose(1, 2)
+        logits = (keys.to(q.dtype) * q).sum(-1) * self.head_dim**-0.5  # [bs, heads, len_q, p]
+        return logits.transpose(1, 2)
+
+    def _combine_fine(self, samples, attention_weights):
+        """
+        Every head's weighted sum of its fine ``samples`` with ``attention_weights``
+        ``[bs, len_q, heads, P]``, lifted per head to ``[bs, len_q, C]``. The weighted sum is a
+        multiply and a reduction as in the core, and the lift is one batched matmul in fp32 like
+        the sampling (with the one transposition copy it needs) and a copy into the output layout.
+        """
+        bs, _, len_q, heads, _ = samples.shape
         read = (samples * attention_weights.unsqueeze(1)).sum(-1)  # [bs, fine_dim, len_q, heads]
         with torch.autocast(device_type=read.device.type, enabled=False):
             lifted = torch.matmul(read.permute(0, 3, 2, 1), self.fine_lift)  # [bs, heads, len_q, head_dim]
@@ -236,11 +269,7 @@ class MSDeformableAttention(nn.Module):
         sampling_offsets: torch.Tensor = self.sampling_offsets(query)
         sampling_offsets = sampling_offsets.reshape(bs, len_q, self.num_heads, sum(self.num_points_list), 2)
 
-        attention_weights = self.attention_weights(query).reshape(bs, len_q, self.num_heads, -1)
-        attention_weights = F.softmax(attention_weights, dim=-1)  # over the head's points, and its null entry
-        null_weight = None
-        if self.null_point:
-            attention_weights, null_weight = attention_weights[..., :-1], attention_weights[..., -1:]
+        logits = self.attention_weights(query).reshape(bs, len_q, self.num_heads, -1)
 
         if reference_points.shape[-1] != 4:
             # See: https://github.com/lyuwenyu/RT-DETR/issues/505 for the 2-coordinate form
@@ -255,16 +284,27 @@ class MSDeformableAttention(nn.Module):
         offset = sampling_offsets * num_points_scale * wh * self.offset_scale
         sampling_locations = reference_points[:, :, None, :, :2] + offset
 
+        p = self.num_points_list[0]
+        samples = None
+        if self.fine_dim > 0:
+            samples = self._sample_fine(value[0], value_spatial_shapes[0], sampling_locations[:, :, :, :p])
+            if self.fine_key_aware:
+                # the fine level's logits are the query-predicted one plus what the sample says;
+                # the softmax below still spans every level, so the levels stay comparable
+                logits = torch.cat([logits[..., :p] + self._fine_logits(samples, query), logits[..., p:]], dim=-1)
+
+        attention_weights = F.softmax(logits, dim=-1)  # over the head's points, and its null entry
+        null_weight = None
+        if self.null_point:
+            attention_weights, null_weight = attention_weights[..., :-1], attention_weights[..., -1:]
+
         if self.fine_dim == 0:
             output = self.ms_deformable_attn_core(
                 value, value_spatial_shapes, sampling_locations, attention_weights, self.num_points_list
             )
         else:
             # the raw fine level's points come first; the other levels go through the core
-            p = self.num_points_list[0]
-            fine = self._read_fine(
-                value[0], value_spatial_shapes[0], sampling_locations[:, :, :, :p], attention_weights[..., :p]
-            )
+            fine = self._combine_fine(samples, attention_weights[..., :p])
             rest = self.ms_deformable_attn_core(
                 value[1:],
                 value_spatial_shapes[1:],

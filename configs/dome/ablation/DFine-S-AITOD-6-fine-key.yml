@@ -1,0 +1,15 @@
+# AI-TOD ablation, the fine level's attention weights read what they sampled: row 5 plus
+# fine_key_aware (the scaled dot product of a per-head query with a per-head key of every fine
+# sample, added to the query-predicted logit).
+#
+# Motivation from the attention probe of aitod_s_2_fine: on the stride-2 level a head's six
+# points read features only 0.61 alike, so there is plenty to tell apart, yet the head carries
+# 4.6 effective points of 6, nearly uniform weights. The weights cannot see their samples. It
+# samples no more positions than the level already does, 0.05 GMACs an image at 500 queries.
+
+__include__: ['./DFine-S-AITOD-5-min-cells.yml']
+
+output_dir: ./outputs/ablation/aitod_s_6_fine_key
+
+DFINETransformer:
+  fine_key_aware: True

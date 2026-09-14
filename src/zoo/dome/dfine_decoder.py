@@ -268,6 +268,15 @@ class DFINETransformer(nn.Module):
             selection, gets an anchor or is scored, so the selection and the losses are those of
             the encoder levels alone. ``num_points`` then has one more entry, its first for the
             fine level. 0 (default): no fine level.
+        fine_key_aware: the fine level's attention logits are the query-predicted one plus the
+            scaled dot product of a per-head query with a per-head key of each sample, so a head
+            can tell an informative fine sample from a background one; without it the weights come
+            from the query alone and know nothing of what was read. The probes found a head's six
+            fine points reading features only 0.61 alike yet carrying 4.6 effective points of 6,
+            the signature of weights that cannot see their samples. It touches no more positions
+            than the sampling already does (0.05 GMACs an image at 500 queries), unlike making the
+            level a token level, which costs 41 GMACs of cross-attention against the model's 13.
+            The key starts at zero, so a run begins exactly where it begins without this.
         null_point: every cross-attention head gets a softmax entry that samples nothing and
             carries a learned vector instead (``MSDeformableAttention``), so a head with nothing
             useful at its points can abstain rather than return a full-magnitude mixture of them.
@@ -343,6 +352,7 @@ class DFINETransformer(nn.Module):
         anchor_grid_size=0.05,
         anchor_cells=0,
         fine_channels=0,
+        fine_key_aware=False,
         null_point=False,
         query_budget="fixed",
         count_level=0,
@@ -439,6 +449,7 @@ class DFINETransformer(nn.Module):
             cross_attn_method=cross_attn_method,
             min_sample_cells=min_sample_cells,
             fine_dim=fine_channels,
+            fine_key_aware=fine_key_aware,
             null_point=null_point,
         )
         decoder_layer = TransformerDecoderLayer(**layer_args)

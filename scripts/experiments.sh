@@ -44,6 +44,7 @@ declare -A CONFIGS=(
     [abl_aitod_3_enc_quality]=configs/dome/ablation/DFine-S-AITOD-3-enc-quality.yml
     [abl_aitod_4_fine]=configs/dome/ablation/DFine-S-AITOD-4-fine.yml
     [abl_aitod_5_min_cells]=configs/dome/ablation/DFine-S-AITOD-5-min-cells.yml
+    [abl_aitod_6_fine_key]=configs/dome/ablation/DFine-S-AITOD-6-fine-key.yml
     # the stride study: the fine level with and without its two depthwise blocks, both at the
     # baseline's fixed 300 queries, which settles fine_blocks for row 3
     [abl_aitod_2_fine]=configs/dome/ablation/DFine-S-AITOD-2-fine.yml
