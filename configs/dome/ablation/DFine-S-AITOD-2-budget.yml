@@ -15,15 +15,25 @@ output_dir: ./outputs/ablation/aitod_s_2_budget
 
 DFINETransformer:
   anchor_cells: 10
-  # the tokens the encoder scores above 0.4, plus a margin of 200 for the duplicates and
-  # background candidates the matching needs, rounded up to 100, 300 at least and 1500 at most;
-  # in training the ground-truth count stands in for the token count
+  # the tokens the encoder scores above 0.15, rounded up to 100, 300 at least and 1500 at most.
+  # The threshold is read off the trained baseline (tools/analysis/encoder_scores.py): the score
+  # of the token at rank "one per object" has median 0.53 and 5th percentile 0.30, flat in the
+  # image's density, so 0.15 sits below the cliff on almost every image and the token count comes
+  # out at 2.0 times the object count at the median, 1.7 on the dense tiles. That multiplicative
+  # overshoot is the margin the matching needs (the duplicates and background candidates), and it
+  # grows with density, which a constant margin does not: 0.4 with a margin of 200, calibrated on
+  # a 6-epoch model, covered 85% of the images against this rule's 99.5% and cost more queries.
+  # Weighted over the split: 312 queries an image on average, 0.38% of the objects beyond the
+  # budget, against 300 / 6.95% for a fixed 300 and 1500 / 0.32% for a fixed 1500.
   query_budget: threshold
-  count_threshold: 0.4
-  count_margin: 200
+  count_threshold: 0.15
+  count_margin: 0
   count_round: 100
   count_range: [300, 1500]
-  count_train_budget: gt
+  # in training the budget is the larger of the rule's count and the ground truth's, so the model
+  # sees the budgets the rule hands out at inference and never fewer queries than it has objects
+  # (the score head starts at a 0.01 prior, so the rule contributes nothing before it has learnt)
+  count_train_budget: max
 
 train_dataloader:
   # the batches grouped by object count in the budget's steps of 100, so a batch pads nothing

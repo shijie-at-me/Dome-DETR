@@ -23,15 +23,15 @@ __include__: [
 output_dir: ./outputs/dfine_s_aitod_ours
 
 DFINETransformer:
-  # the budget: the tokens the encoder scores above 0.4, plus a margin of 200 for the duplicates
-  # and background candidates the matching needs, rounded up to 100, 300 at least and 1500 at
-  # most; in training the ground-truth count stands in for the token count
+  # the budget, calibrated on the trained baseline (see ablation/DFine-S-AITOD-2-budget.yml): the
+  # tokens the encoder scores above 0.15, rounded up to 100, 300 at least and 1500 at most, and in
+  # training the larger of that count and the ground truth's
   query_budget: threshold
-  count_threshold: 0.4
-  count_margin: 200
+  count_threshold: 0.15
+  count_margin: 0
   count_round: 100
   count_range: [300, 1500]
-  count_train_budget: gt
+  count_train_budget: max
 
 train_dataloader:
   # the batches grouped by object count in the budget's steps of 100, so a batch pads nothing
