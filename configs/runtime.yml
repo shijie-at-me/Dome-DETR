@@ -12,9 +12,11 @@ checkpoint_freq: 12
 # validation costs 40% of an epoch
 eval_freq: 1
 eval_after: 100
-# stage 2 reloads the best stage-1 checkpoint after this many evaluated epochs without a new best;
-# 0 never reloads, which is what a run continued past its schedule wants
-patience: 6
+# stage 2 would reload the best stage-1 checkpoint after this many evaluated epochs without a new
+# best; 0 never reloads. Off: in the six legacy runs and our own it either never fired or threw
+# away 1.6 AP and a dozen epochs climbing back, and it never produced a new best (D-FINE-L AI-TOD
+# reloaded at epoch 129 and 144, dropping 34.6 to 33.0 and 34.5 to 32.9, its best staying at 123)
+patience: 0
 
 
 sync_bn: True

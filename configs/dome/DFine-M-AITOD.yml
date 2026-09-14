@@ -1,7 +1,7 @@
 # D-FINE-M baseline on AI-TOD-v2: the plain HybridEncoder and the D-FINE decoder at the M scale
-# (include/scale_m.yml) on the shared 160-epoch recipe. 300 queries, D-FINE's fixed top-k; the tiles
-# reach 2667 objects and the evaluator keeps 1500 detections per image, which the per-image
-# budget of the Ours config is for.
+# (include/scale_m.yml) on the shared 200-epoch recipe. 500 queries, as VisDrone and the S
+# scale use; the tiles reach 2667 objects and the evaluator keeps 1500 detections per image,
+# which the per-image budget of the Ours config is for.
 
 __include__: [
   '../dataset/aitod_detection.yml',
@@ -20,4 +20,4 @@ DOME:
   decoder: DFINETransformer
 
 DFINETransformer:
-  num_queries: 300
+  num_queries: 500

@@ -30,7 +30,7 @@ DFINETransformer:
   count_threshold: 0.15
   count_margin: 0
   count_round: 100
-  count_range: [300, 1500]
+  count_range: [500, 1500]
   count_train_budget: max
 
 train_dataloader:

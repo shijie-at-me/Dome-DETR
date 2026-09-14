@@ -3,9 +3,9 @@
 # switches of include/ours.yml one at a time on top of this file; row 6 is
 # DFine-S-AITOD-Ours.yml, whose last step is the null entry.
 #
-# The budget goes first because the tiles reach 2667 objects and a fixed 300 queries starves the
-# dense ones: every later switch is then measured on a model that is not query-limited, which is
-# what their value in the final model is. The cell anchors of ours.yml come in here as well: on
+# The budget goes first because the tiles reach 2667 objects and even a fixed 500 queries leaves
+# 3.3% of the boxes out of reach: every later switch is then measured on a model that is not
+# query-limited, which is what their value in the final model is. The cell anchors of ours.yml come in here as well: on
 # the square tiles they equal the baseline's at test time and differ by the multi-scale draw
 # alone in training.
 
@@ -24,12 +24,14 @@ DFINETransformer:
   # grows with density, which a constant margin does not: 0.4 with a margin of 200, calibrated on
   # a 6-epoch model, covered 85% of the images against this rule's 99.5% and cost more queries.
   # Weighted over the split: 312 queries an image on average, 0.38% of the objects beyond the
-  # budget, against 300 / 6.95% for a fixed 300 and 1500 / 0.32% for a fixed 1500.
+  # budget, against 6.95% for a fixed 300, 3.35% for the fixed 500 of the baseline and 0.32% for
+  # a fixed 1500. The floor is the baseline's 500, so no image is given fewer queries than the
+  # row it is compared with and the dense ones are given more.
   query_budget: threshold
   count_threshold: 0.15
   count_margin: 0
   count_round: 100
-  count_range: [300, 1500]
+  count_range: [500, 1500]
   # in training the budget is the larger of the rule's count and the ground truth's, so the model
   # sees the budgets the rule hands out at inference and never fewer queries than it has objects
   # (the score head starts at a 0.01 prior, so the rule contributes nothing before it has learnt)

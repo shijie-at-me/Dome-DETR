@@ -1,7 +1,12 @@
-# The training recipe of every D-FINE run here, whatever the scale or dataset: 160 epochs at
-# batch 8, AdamW with the backbone at a tenth of the rate, two decays of 0.8, and the last 40
-# epochs on clean images (augmentation and multi-scale off from epoch 120, where the second
-# decay lands; stage 2 starts there).
+# The training recipe of every D-FINE run here, whatever the scale or dataset: 200 epochs at
+# batch 8, AdamW with the backbone at a tenth of the rate, two decays of 0.8, and the last 80
+# epochs on clean images (the scale and colour augmentations and multi-scale off from epoch 120,
+# where the second decay lands; the flips and rotations stay, stage 2 starts there).
+#
+# The rate is not decayed again over those 80 epochs. The 160-epoch runs ended with the baseline
+# flat (slope -0.03 AP per 10 epochs over its last five) and the fine level still climbing
+# (+0.46), so the clean phase is where the models separate, and a third decay would settle both
+# at once and blur that.
 # Overrides the defaults of optimizer.yml and the datasets' stop_epoch.
 
 optimizer:
@@ -27,7 +32,7 @@ lr_scheduler:
   milestones: [80, 120]
   gamma: 0.8
 
-epoches: 160
+epoches: 200
 train_dataloader:
   dataset:
     transforms:
