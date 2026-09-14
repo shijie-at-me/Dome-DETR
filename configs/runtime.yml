@@ -12,6 +12,9 @@ checkpoint_freq: 12
 # validation costs 40% of an epoch
 eval_freq: 1
 eval_after: 100
+# stage 2 reloads the best stage-1 checkpoint after this many evaluated epochs without a new best;
+# 0 never reloads, which is what a run continued past its schedule wants
+patience: 6
 
 
 sync_bn: True

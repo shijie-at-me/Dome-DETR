@@ -23,16 +23,23 @@ class DetSolver(BaseSolver):
     optimizer state, restarts the EMA with ``ema_restart_decay`` and trains on clean single-scale
     batches, keeping its best as ``best_stg2.pth``. When stage 2 goes ``patience`` epochs without
     a new best, it reloads ``best_stg1.pth`` again with a slightly smaller EMA decay and tries
-    once more. A reload leaves the learning rate schedule where training is: restoring the
-    checkpoint's schedulers would rewind the rate past its milestones, as upstream did.
+    once more (``patience`` 0 never does, which is what a run continued past its schedule wants).
+    A reload leaves the learning rate schedule where training is: restoring the checkpoint's
+    schedulers would rewind the rate past its milestones, as upstream did.
 
     Stage 1 validates from epoch ``eval_after`` on, every ``eval_freq`` epochs, and its last epoch
     whatever the two say (stage 2 reloads that ``best_stg1.pth``); stage 2 validates every epoch,
     its patience counts them.
+
+    ``last.pth`` is written after every epoch of either stage and carries the best AP reached so
+    far, so a run can be continued with ``-r <run>/last.pth`` and a larger ``epoches``: the
+    continued run keeps validating every epoch, cannot overwrite ``best_stg2.pth`` with something
+    worse than the best it already had, and with ``patience`` 0 will not rewind to stage 1. The
+    random number generators are not restored, so a continued run is not the run that would have
+    trained straight through, only one of the same distribution.
     """
 
     metric = "coco_eval_bbox"  # the evaluator's stats; AP@[.5:.95] is entry 0
-    patience = 6
 
     def fit(self):
         self.train()
@@ -43,10 +50,15 @@ class DetSolver(BaseSolver):
         print(model_stats)
         print("-" * 42 + "Start training" + "-" * 43)
 
-        best_ap, best_epoch = float("-inf"), -1  # so the first evaluated epoch is saved as best_stg1
+        # -inf until an epoch is evaluated, so the first one is saved as best_stg1; a resumed run
+        # brings the best it had reached, so continuing cannot overwrite a better checkpoint
+        best_ap, best_epoch = self.best_ap, self.best_epoch
         if self.last_epoch > 0:
-            test_stats, _ = self._evaluate()
-            best_ap, best_epoch = test_stats[self.metric][0], self.last_epoch
+            test_stats, _ = self._evaluate()  # also a check that the checkpoint loaded into this model
+            ap = test_stats[self.metric][0]
+            print(f"resumed at epoch {self.last_epoch}: {self.metric} {ap}")
+            if ap > best_ap:
+                best_ap, best_epoch = ap, self.last_epoch
             print(f"best_stat: {{'epoch': {best_epoch}, '{self.metric}': {best_ap}}}")
         # the stage-2 patience counter is only checked on epochs that fail to improve on the
         # best AP seen since the last reload
@@ -86,8 +98,7 @@ class DetSolver(BaseSolver):
 
             self.last_epoch = epoch
 
-            if not stage2:
-                self._save_periodic_checkpoints(epoch)
+            self._save_periodic_checkpoints(epoch, stage2)
 
             log_stats = {
                 **{f"train_{k}": v for k, v in train_stats.items()},
@@ -108,6 +119,7 @@ class DetSolver(BaseSolver):
 
             if ap > best_ap:
                 best_ap, best_epoch = ap, epoch
+                self.best_ap, self.best_epoch = best_ap, best_epoch
                 not_improved = 0
                 self._save_checkpoint("best_stg2.pth" if stage2 else "best_stg1.pth")
             else:
@@ -117,13 +129,13 @@ class DetSolver(BaseSolver):
 
             if ap > best_since_reload:
                 best_since_reload = ap
-            elif stage2:
-                if not_improved >= self.patience:
+            elif stage2 and cfg.patience > 0:
+                if not_improved >= cfg.patience:
                     self._reload_best_stage1(epoch, ema_decay=self.ema.decay - 0.0001 if self.ema else None)
                     not_improved = 0
                     best_since_reload = float("-inf")
                 else:
-                    print(f"Tolerate undesirable result for patience: {not_improved} / {self.patience} ")
+                    print(f"Tolerate undesirable result for patience: {not_improved} / {cfg.patience} ")
 
             log_stats.update({f"test_{k}": v for k, v in test_stats.items()})
             self._append_log(log_stats)
@@ -150,10 +162,11 @@ class DetSolver(BaseSolver):
         if self.output_dir:
             dist_utils.save_on_master(self.state_dict(), self.output_dir / name)
 
-    def _save_periodic_checkpoints(self, epoch: int):
-        """``last.pth`` every epoch, plus a numbered copy every ``checkpoint_freq`` epochs."""
+    def _save_periodic_checkpoints(self, epoch: int, stage2: bool):
+        """``last.pth`` every epoch, whatever the stage, so a run can always be resumed from where it
+        stopped; the numbered copies are stage 1's, where no checkpoint is kept otherwise."""
         self._save_checkpoint("last.pth")
-        if (epoch + 1) % self.cfg.checkpoint_freq == 0:
+        if not stage2 and (epoch + 1) % self.cfg.checkpoint_freq == 0:
             self._save_checkpoint(f"checkpoint{epoch:04}.pth")
 
     def _log_test_stats(self, test_stats: dict, epoch: int):

@@ -136,6 +136,9 @@ class BaseConfig:
         # DetSolver)
         self.eval_freq: int = 1
         self.eval_after: int = 0
+        # stage 2 reloads the best stage-1 checkpoint after this many evaluated epochs without a new
+        # best; 0 never reloads, which is what a run continued past its schedule wants (see DetSolver)
+        self.patience: int = 6
         self.output_dir: str = None
         self.summary_dir: str = None
         self.device: str = ""

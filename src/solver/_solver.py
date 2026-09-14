@@ -66,6 +66,9 @@ class BaseSolver:
 
         self.device = device
         self.last_epoch = cfg.last_epoch
+        # the best validation AP so far and the epoch it came from, carried through a resume so
+        # that continuing a run cannot overwrite a better checkpoint with a worse one
+        self.best_ap, self.best_epoch = float("-inf"), -1
 
         self.output_dir = Path(cfg.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -120,7 +123,12 @@ class BaseSolver:
 
     def state_dict(self):
         """Everything needed to resume: every attribute with a state dict, plus the epoch."""
-        state = {"date": datetime.now().isoformat(), "last_epoch": self.last_epoch}
+        state = {
+            "date": datetime.now().isoformat(),
+            "last_epoch": self.last_epoch,
+            "best_ap": self.best_ap,
+            "best_epoch": self.best_epoch,
+        }
         for k, v in self.__dict__.items():
             if hasattr(v, "state_dict"):
                 state[k] = dist_utils.de_parallel(v).state_dict()
@@ -131,6 +139,9 @@ class BaseSolver:
         if "last_epoch" in state:
             self.last_epoch = state["last_epoch"]
             print("Load last_epoch")
+        if "best_ap" in state:  # checkpoints written before this was recorded have none
+            self.best_ap, self.best_epoch = state["best_ap"], state.get("best_epoch", -1)
+            print(f"Load best_ap {self.best_ap} of epoch {self.best_epoch}")
 
         for k, v in self.__dict__.items():
             if not hasattr(v, "load_state_dict"):
