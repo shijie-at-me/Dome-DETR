@@ -29,5 +29,10 @@ class DetDataset(data.Dataset):
         self._epoch = epoch
 
     @property
+    def _epoch_policy(self) -> bool:
+        """Whether the transform pipeline reads the epoch, so that a loader can refuse to freeze it."""
+        return getattr(self.transforms, "policy", {}).get("name", "default") == "stop_epoch"
+
+    @property
     def epoch(self):
         return getattr(self, "_epoch", -1)

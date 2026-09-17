@@ -21,7 +21,20 @@ __all__ = ["GroupedBatchSampler", "object_counts"]
 
 
 def object_counts(dataset) -> list[int]:
-    """The objects of every image of ``dataset`` in index order, from its COCO annotations, crowd (ignore) boxes left out."""
+    """
+    The objects of every image of ``dataset`` in index order, crowd (ignore) boxes left out.
+
+    Read from the annotation columns, not from ``dataset.coco``: building the COCO ground truth of
+    the training split costs 7 s and 231 MB resident for AI-TOD's 376k annotations, and nothing
+    else in training ever reads it (the evaluator scores against the validation split's).
+    """
+    meta = getattr(dataset, "hf_meta", None)
+    if meta is not None:
+        counts = []
+        for row in meta:
+            _, _, iscrowd = dataset.parse_objects(row["objects"])
+            counts.append(int((iscrowd == 0).sum()))
+        return counts
     coco = dataset.coco
     return [sum(1 for a in coco.imgToAnns.get(i, ()) if not a.get("iscrowd", 0)) for i in range(len(dataset))]
 

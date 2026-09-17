@@ -27,7 +27,10 @@ train_dataloader:
     transforms:
       type: Compose
       ops:
-        - {type: RandomZoomOut, fill: 0}
+        # side_range up to 2, not torchvision's 4: at 4 the median box goes from 12.6 px to
+        # 8.1 and 18% of the boxes land under 4 px, most of that unlearnable noise; at 2 the
+        # median is 10.1 px and 4% land under 4 px, which is the vt bucket being filled
+        - {type: RandomZoomOut, fill: 0, side_range: [1.0, 2.0]}
         - {type: RandomIoUCrop, p: 0.8}
         - {type: SanitizeBoundingBoxes, min_size: 1}
         - {type: RandomHorizontalFlip}

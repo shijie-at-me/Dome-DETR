@@ -49,8 +49,18 @@ class DataLoader(data.DataLoader, EpochAware):
 
     def set_epoch(self, epoch: int) -> None:
         super().set_epoch(epoch)
+        # a worker holds its own copy of the dataset, made when the iterator was created: with
+        # persistent workers that copy keeps the epoch it was born with, and every epoch-dependent
+        # transform policy silently never fires
+        if self.persistent_workers and self.num_workers > 0 and getattr(self.dataset, "_epoch_policy", False):
+            raise RuntimeError(
+                "the dataset has an epoch-dependent transform policy, which persistent_workers "
+                "would freeze at the epoch the workers were created with; set persistent_workers "
+                "to false on this loader"
+            )
         self.dataset.set_epoch(epoch)
-        self.collate_fn.set_epoch(epoch)
+        if hasattr(self.collate_fn, "set_epoch"):
+            self.collate_fn.set_epoch(epoch)
         if hasattr(self.batch_sampler, "set_epoch"):  # a GroupedBatchSampler reshuffles per epoch
             self.batch_sampler.set_epoch(epoch)
 
@@ -136,7 +146,9 @@ class BatchImageCollateFunction(BaseCollateFunction):
 
         if self.scales is not None and self.epoch < self.stop_epoch:
             sz = random.choice(self.scales)
-            images = F.interpolate(images, size=sz)
+            # bilinear, not interpolate's nearest default: a batch drawn at 0.8x loses every fifth
+            # row and column under nearest, which on an 8 px object is most of what it is
+            images = F.interpolate(images, size=sz, mode="bilinear", align_corners=False)
             if "masks" in targets[0]:
                 for tg in targets:
                     tg["masks"] = F.interpolate(tg["masks"], size=sz, mode="nearest")
