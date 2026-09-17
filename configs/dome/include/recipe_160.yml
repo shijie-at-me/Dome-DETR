@@ -1,9 +1,20 @@
-# The training recipe of every D-FINE run here, whatever the scale or dataset: 200 epochs at
-# batch 8, AdamW with the backbone at a tenth of the rate, two decays of 0.8, and the last 80
-# epochs on clean images (the scale and colour augmentations and multi-scale off from epoch 120,
-# where the second decay lands; the flips and rotations stay, stage 2 starts there).
+# The training recipe of every D-FINE run here, whatever the scale or dataset: 160 epochs at
+# batch 8, AdamW with the backbone at a tenth of the rate, two decays of 0.8, and the last 52
+# epochs on clean images (the scale and colour augmentations and multi-scale off from epoch 108;
+# the flips and rotations stay, stage 2 starts there).
 #
-# The rate is not decayed again over those 80 epochs. The 160-epoch runs ended with the baseline
+# The boundary sits at 108, the legacy Dome recipe's, not at 120. Measured on the two finished
+# 160-epoch AI-TOD runs, an epoch is worth far more on clean images than on augmented ones by
+# that point: the baseline gains 0.311 AP per 10 epochs over the last 12 augmented epochs and
+# 0.814 over the first 12 clean ones, the fine-level run 0.453 against 0.536, while stage 1's
+# own tail is already flat (the baseline 0.147 per 10 epochs over 100-107, the fine run -0.271).
+# The clean phase has a window where it climbs fastest and then decays, so it is worth starting
+# early. The second rate decay stays at 120 and is now decoupled from the boundary, as it is in
+# the legacy recipe.
+#
+# Every run trains 160 epochs (the user's rule of 2026-09-15); a run that is still climbing is
+# continued to 200 on its own, with -r on its last.pth and -u epoches=200 (the solver allows it).
+# The rate is not decayed again over the clean epochs. The 160-epoch runs ended with the baseline
 # flat (slope -0.03 AP per 10 epochs over its last five) and the fine level still climbing
 # (+0.46), so the clean phase is where the models separate, and a third decay would settle both
 # at once and blur that.
@@ -32,11 +43,11 @@ lr_scheduler:
   milestones: [80, 120]
   gamma: 0.8
 
-epoches: 200
+epoches: 160
 train_dataloader:
   dataset:
     transforms:
       policy:
-        epoch: 120
+        epoch: 108
   collate_fn:
-    stop_epoch: 120
+    stop_epoch: 108
