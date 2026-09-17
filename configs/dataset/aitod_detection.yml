@@ -27,10 +27,12 @@ train_dataloader:
     transforms:
       type: Compose
       ops:
-        # side_range up to 2, not torchvision's 4: at 4 the median box goes from 12.6 px to
-        # 8.1 and 18% of the boxes land under 4 px, most of that unlearnable noise; at 2 the
-        # median is 10.1 px and 4% land under 4 px, which is the vt bucket being filled
-        - {type: RandomZoomOut, fill: 0, side_range: [1.0, 2.0]}
+        # torchvision's default range, which the legacy Dome run also used: the canvas grows up
+        # to 4x, so the median box drops from 12.6 px to 7.9 and 18% of the boxes land under
+        # 4 px. A cap at 2x leaves the median at 12.0 px with 3.4% under 4 px, but the very
+        # tiny bucket is where the legacy run beats us (APvt 17.7 against 15.4) and 4x is what
+        # it trained with, so match it; the cap is the variant to try if vt still lags
+        - {type: RandomZoomOut, fill: 0}
         - {type: RandomIoUCrop, p: 0.8}
         - {type: SanitizeBoundingBoxes, min_size: 1}
         - {type: RandomHorizontalFlip}
