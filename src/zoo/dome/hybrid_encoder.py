@@ -23,12 +23,19 @@ import torch.nn.functional as F  # noqa: N812
 
 from ...core import register
 from ...misc.visualizer import dump_feature_map
-from ...nn.blocks import ConvNormLayerFuse, LightFusion, RepNCSPELAN4, SCDown
+from ...nn.blocks import ConvNormLayerFuse, LightFusion, RepNCSPELAN4, RepSepFusion, SCDown, SeparableConv
 from ...nn.checkpoint import checkpoint_module
 from ...nn.position_encoding import build_2d_sincos_position_embedding
 from ...nn.transformer import TransformerEncoder, TransformerEncoderLayer
 
 __all__ = ["HybridEncoder"]
+
+
+class ResidualSequential(nn.Sequential):
+    """A Sequential whose input is added to its output (the members keep Sequential's state-dict names)."""
+
+    def forward(self, x):
+        return x + super().forward(x)
 
 
 @register()
@@ -42,8 +49,10 @@ class HybridEncoder(nn.Module):
         expansion / depth_mult / act: width, depth and activation of the pyramid's fusion blocks.
         fine_fusion: the top-down fusion block of the finest level, where the maps are largest:
             ``elan`` (the same ``RepNCSPELAN4`` as the other levels), ``slim`` (the ELAN block
-            with its inner width halved to ``hidden_dim``) or ``light`` (``blocks.LightFusion``:
-            a 1x1 fuse, a depthwise 3x3 and a 1x1, a quarter of the ELAN block's FLOPs).
+            with its inner width halved to ``hidden_dim``), ``light`` (``blocks.LightFusion``:
+            a 1x1 fuse, a depthwise 3x3 and a 1x1 with a residual, a third of the ELAN block's
+            FLOPs) or ``separable`` (``blocks.SeparableConv``, EfficientDet's BiFPN block as
+            published: a depthwise 3x3 and a pointwise 1x1, a fifth of the ELAN block's FLOPs).
         use_hybrid: run the top-down / bottom-up pyramid; off, the projected levels are returned.
         checkpoint_fusion: in training, recompute the fusion blocks' (and the fine level's
             blocks') activations in the backward pass instead of keeping them (the stride-4
@@ -56,7 +65,11 @@ class HybridEncoder(nn.Module):
             finest pyramid level's semantics (a 1x1, upsampled), then ``fine_blocks`` depthwise
             3x3 / 1x1 pairs, ``fine_dim`` wide. It stays out of the pyramid and the encoder's
             levels: the decoder reads it as values only (``DFINETransformer(fine_channels)``).
-            ``fine_in_channels`` 0 (default): no fine level.
+            ``fine_in_channels`` 0 (default): no fine level. ``fine_residual`` gives each
+            block a skip from its input (free; off by default so the configs of the runs
+            trained without it still describe them). ``fine_groups`` (with the decoder's, set to
+            num_heads) mixes each head's channels only within its own group, so the level is a
+            stack of per-head sub-maps as the coarse levels are split across heads.
 
     ``forward(feats, img_inputs, targets)`` returns a dict with ``feats`` (the pyramid, one
     tensor per level), ``img_inputs`` (the image, passed through for the decoder's dumps) and,
@@ -84,9 +97,13 @@ class HybridEncoder(nn.Module):
         use_hybrid=True,
         checkpoint_fusion=False,
         fine_fusion="elan",
+        fine_fusion_hidden=256,
+        fine_fusion_depth=2,
         fine_in_channels=0,
         fine_dim=64,
         fine_blocks=2,
+        fine_residual=False,
+        fine_groups=1,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -101,7 +118,7 @@ class HybridEncoder(nn.Module):
         self.out_strides = feat_strides
         self.use_hybrid = use_hybrid
         self.checkpoint_fusion = checkpoint_fusion
-        assert fine_fusion in ("elan", "slim", "light"), fine_fusion
+        assert fine_fusion in ("elan", "slim", "light", "separable", "repsep"), fine_fusion
         self.fine_fusion = fine_fusion
         self.dim_feedforward = dim_feedforward
         self.fine_in_channels = fine_in_channels
@@ -143,6 +160,14 @@ class HybridEncoder(nn.Module):
                 finest = i == len(in_channels) - 2
                 if finest and fine_fusion == "light":
                     self.fpn_blocks.append(LightFusion(hidden_dim * 2, hidden_dim, act=act))
+                elif finest and fine_fusion == "separable":
+                    self.fpn_blocks.append(SeparableConv(hidden_dim * 2, hidden_dim, act=act))
+                elif finest and fine_fusion == "repsep":
+                    self.fpn_blocks.append(
+                        RepSepFusion(
+                            hidden_dim * 2, hidden_dim, hidden=fine_fusion_hidden, depth=fine_fusion_depth, k=5, act=act
+                        )
+                    )
                 elif finest and fine_fusion == "slim":
                     self.fpn_blocks.append(RepNCSPELAN4(hidden_dim * 2, hidden_dim, **{**fusion, "c3": hidden_dim}))
                 else:
@@ -159,11 +184,15 @@ class HybridEncoder(nn.Module):
         if fine_in_channels > 0:
             self.fine_lateral = ConvNormLayerFuse(fine_in_channels, fine_dim, 1, 1)
             self.fine_top_down = ConvNormLayerFuse(hidden_dim, fine_dim, 1, 1)
+            assert fine_dim % fine_groups == 0, "fine_dim must divide by fine_groups"
+            block = ResidualSequential if fine_residual else nn.Sequential
             self.fine_blocks = nn.Sequential(
                 *(
-                    nn.Sequential(
+                    block(
                         ConvNormLayerFuse(fine_dim, fine_dim, 3, 1, g=fine_dim, act=act),
-                        ConvNormLayerFuse(fine_dim, fine_dim, 1, 1, act=act),
+                        # grouped 1x1: with fine_groups == num_heads each head's channels mix only
+                        # within their own group, so the map is num_heads independent sub-maps
+                        ConvNormLayerFuse(fine_dim, fine_dim, 1, 1, g=fine_groups, act=act),
                     )
                     for _ in range(fine_blocks)
                 )

@@ -172,20 +172,114 @@ class CSPLayer(nn.Module):
 class LightFusion(nn.Module):
     """
     A light fusion block: a 1x1 conv folds the concatenated inputs to ``c2`` channels, and a
-    depthwise 3x3 with a 1x1 mixes them spatially and across channels (conv-BN-act each). For
+    depthwise 3x3 with a 1x1 mixes them spatially and across channels (conv-BN-act each), and
+    with ``residual`` the folded input is added to the result, so the block starts near an
+    identity on the folded features and the two mixing convs learn a correction. For
     a pyramid level too large for ``RepNCSPELAN4``: at 960x960 the stride-4 level's ELAN block
     is a third of the encoder's time and memory, most of it the two wide 1x1 convs and their
     norms on 240x240 maps; this block is a quarter of its FLOPs.
     """
 
-    def __init__(self, c1, c2, bias=False, act="silu"):
+    def __init__(self, c1, c2, bias=False, act="silu", residual=True):
         super().__init__()
         self.fuse = ConvNormLayerFuse(c1, c2, 1, 1, bias=bias, act=act)
         self.spatial = ConvNormLayerFuse(c2, c2, 3, 1, g=c2, bias=bias, act=act)
         self.mix = ConvNormLayerFuse(c2, c2, 1, 1, bias=bias, act=act)
+        self.residual = residual  # the folded input skips the two mixing convs (MobileNetV2-style, free)
 
     def forward(self, x):
-        return self.mix(self.spatial(self.fuse(x)))
+        y = self.fuse(x)
+        out = self.mix(self.spatial(y))
+        return out + y if self.residual else out
+
+
+class SeparableConv(nn.Module):
+    """
+    The depthwise separable convolution as EfficientDet's BiFPN applies it after fusing a node's
+    inputs (Xception / MobileNetV1's block): a depthwise 3x3, a pointwise 1x1 to ``c2`` channels,
+    BN and the activation after the pointwise. No expansion, no residual: the block as published.
+    """
+
+    def __init__(self, c1, c2, bias=False, act="silu"):
+        super().__init__()
+        self.depthwise = nn.Conv2d(c1, c1, 3, 1, padding=1, groups=c1, bias=False)
+        self.pointwise = ConvNormLayerFuse(c1, c2, 1, 1, bias=bias, act=act)
+
+    def forward(self, x):
+        return self.pointwise(self.depthwise(x))
+
+
+class RepDWConv(nn.Module):
+    """
+    A reparameterizable depthwise conv: parallel depthwise ``k``x``k`` and 3x3 (and a BN identity)
+    branches at training, folded into one depthwise ``k``x``k`` conv for deployment (RepVGG-style,
+    depthwise). ``k`` >= 3. Extra train-time branches raise capacity at zero inference cost.
+    """
+
+    def __init__(self, ch, k=5, act=None):
+        super().__init__()
+        assert k >= 3 and k % 2 == 1, k
+        self.ch, self.k = ch, k
+        self.big = ConvNormLayer(ch, ch, k, 1, groups=ch, act=None)
+        self.small = ConvNormLayer(ch, ch, 3, 1, groups=ch, act=None)
+        self.bn = nn.BatchNorm2d(ch)  # the identity branch (in == out for depthwise)
+        self.act = nn.Identity() if act is None else get_activation(act)
+
+    def forward(self, x):
+        if hasattr(self, "conv"):
+            return self.act(self.conv(x))
+        return self.act(self.big(x) + self.small(x) + self.bn(x))
+
+    def _bn_to_kernel(self, bn):
+        # a depthwise 1x1 identity conv folded with bn: kernel [ch,1,1,1]
+        std = (bn.running_var + bn.eps).sqrt()
+        scale = bn.weight / std
+        return scale.reshape(-1, 1, 1, 1), bn.bias - bn.running_mean * scale
+
+    def convert_to_deploy(self):
+        if not hasattr(self, "conv"):
+            self.conv = nn.Conv2d(self.ch, self.ch, self.k, 1, padding=(self.k - 1) // 2, groups=self.ch)
+        kb, bb = fuse_conv_bn(self.big.conv, self.big.norm)
+        ks, bs = fuse_conv_bn(self.small.conv, self.small.norm)
+        ki, bi = self._bn_to_kernel(self.bn)
+        pad = (self.k - 3) // 2
+        kernel = kb + F.pad(ks, [pad, pad, pad, pad]) + F.pad(ki, [(self.k - 1) // 2] * 4)
+        self.conv.weight.data = kernel
+        self.conv.bias.data = bb + bs + bi
+        for a in ("big", "small", "bn"):
+            self.__delattr__(a)
+
+
+class RepSepFusion(nn.Module):
+    """
+    A reparameterizable depthwise-separable fusion block, a stronger drop-in for the finest
+    level's fusion than ``LightFusion`` / ``SeparableConv``: a 1x1 fold to ``hidden`` channels,
+    then ``depth`` units of (reparam depthwise ``k``x``k`` -> pointwise 1x1) with a residual, and
+    a 1x1 to ``c2`` if ``hidden`` differs. Width (``hidden``) and depth trade compute for capacity;
+    the depthwise kernels fold at deployment so ``k`` = 5 costs nothing extra at inference.
+    """
+
+    def __init__(self, c1, c2, hidden=None, depth=1, k=5, bias=False, act="silu"):
+        super().__init__()
+        hidden = hidden or c2
+        self.fuse = ConvNormLayerFuse(c1, hidden, 1, 1, bias=bias, act=act)
+        self.units = nn.ModuleList()
+        for _ in range(depth):
+            self.units.append(
+                nn.ModuleDict(
+                    {
+                        "dw": RepDWConv(hidden, k=k, act=act),
+                        "pw": ConvNormLayerFuse(hidden, hidden, 1, 1, bias=bias, act=act),
+                    }
+                )
+            )
+        self.out = ConvNormLayerFuse(hidden, c2, 1, 1, bias=bias, act=act) if hidden != c2 else nn.Identity()
+
+    def forward(self, x):
+        x = self.fuse(x)
+        for u in self.units:
+            x = x + u["pw"](u["dw"](x))
+        return self.out(x)
 
 
 class RepNCSPELAN4(nn.Module):
