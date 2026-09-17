@@ -353,6 +353,7 @@ class DFINETransformer(nn.Module):
         anchor_cells=0,
         fine_channels=0,
         fine_key_aware=False,
+        fine_groups=1,
         null_point=False,
         query_budget="fixed",
         count_level=0,
@@ -450,6 +451,7 @@ class DFINETransformer(nn.Module):
             min_sample_cells=min_sample_cells,
             fine_dim=fine_channels,
             fine_key_aware=fine_key_aware,
+            fine_groups=fine_groups,
             null_point=null_point,
         )
         decoder_layer = TransformerDecoderLayer(**layer_args)

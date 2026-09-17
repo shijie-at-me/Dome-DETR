@@ -116,6 +116,7 @@ class MSDeformableAttention(nn.Module):
         min_sample_cells=0.0,
         fine_dim=0,
         fine_key_aware=False,
+        fine_groups=1,
         null_point=False,
     ):
         super().__init__()
@@ -152,17 +153,25 @@ class MSDeformableAttention(nn.Module):
 
         self.fine_dim = fine_dim
         self.fine_key_aware = fine_key_aware and fine_dim > 0
+        # fine_groups > 1 (only num_heads is supported) splits the fine map into num_heads
+        # contiguous channel groups and gives each head its own group, as the coarse levels split
+        # their value into num_heads slices; each head then lifts fine_dim // num_heads channels
+        # instead of the whole map (1: the map is shared, every head lifts all fine_dim channels).
+        self.fine_groups = fine_groups if fine_dim > 0 else 1
+        assert self.fine_groups in (1, num_heads), "fine_groups must be 1 or num_heads"
+        fine_group_dim = fine_dim // self.fine_groups
         if fine_dim > 0:
             assert method == "default", "a raw fine level needs bilinear sampling"
-            # per head: fine_dim -> head_dim, on the weighted sum of the head's fine samples
+            assert fine_dim % self.fine_groups == 0, "fine_dim must divide by fine_groups"
+            # per head: fine_group_dim -> head_dim, on the weighted sum of the head's fine samples
             # (no bias: the output projection's covers it, and a bias here would not commute with
             # the zero padding outside the map and the attention weights' sum below 1)
-            self.fine_lift = nn.Parameter(torch.empty(num_heads, fine_dim, self.head_dim))
+            self.fine_lift = nn.Parameter(torch.empty(num_heads, fine_group_dim, self.head_dim))
         if self.fine_key_aware:
             # the fine level's logits read what was sampled: a per-head key of every sample and a
             # per-head query, their scaled dot product added to the query-predicted logit. The key
             # starts at zero, so the layer begins exactly where it begins without this
-            self.fine_key = nn.Parameter(torch.zeros(num_heads, fine_dim, self.head_dim))
+            self.fine_key = nn.Parameter(torch.zeros(num_heads, fine_group_dim, self.head_dim))
             self.fine_query = nn.Linear(embed_dim, embed_dim)
 
         self.ms_deformable_attn_core = functools.partial(ms_deformable_attention_core, method=self.method)
@@ -198,16 +207,27 @@ class MSDeformableAttention(nn.Module):
     def _sample_fine(self, value, hw, sampling_locations):
         """
         The raw fine level ``value`` ``[bs, fine_dim, h * w]`` sampled at ``sampling_locations``
-        ``[bs, len_q, heads, P, 2]`` (in [0, 1]), as ``[bs, fine_dim, len_q, heads, P]``. The map
-        is sampled once for all heads: their points are one long grid, written out contiguously
-        by the scaling.
+        ``[bs, len_q, heads, P, 2]`` (in [0, 1]). Shared (``fine_groups`` 1): the map is sampled
+        once for all heads, ``[bs, fine_dim, len_q, heads, P]``. Grouped (``fine_groups`` ==
+        heads): each head samples only its own channel group, so ``grid_sample`` reads
+        ``fine_dim // heads`` channels per head rather than the whole map (and its backward
+        buffer is heads-fold smaller), returning ``[bs, fine_dim // heads, len_q, heads, P]``.
         """
         bs, len_q, heads, p, _ = sampling_locations.shape
         h, w = hw
-        grid = (2 * sampling_locations - 1).reshape(bs, len_q * heads * p, 1, 2)
-        return F.grid_sample(
-            value.view(bs, self.fine_dim, h, w), grid, mode="bilinear", padding_mode="zeros", align_corners=False
-        ).view(bs, self.fine_dim, len_q, heads, p)
+        grid = 2 * sampling_locations - 1
+        if self.fine_groups == 1:
+            grid = grid.reshape(bs, len_q * heads * p, 1, 2)
+            return F.grid_sample(
+                value.view(bs, self.fine_dim, h, w), grid, mode="bilinear", padding_mode="zeros", align_corners=False
+            ).view(bs, self.fine_dim, len_q, heads, p)
+        # per head: batch the map by head so head h reads only group h's gdim channels at its own
+        # points; the view is free (groups are contiguous in the channel axis)
+        gdim = self.fine_dim // heads
+        value = value.reshape(bs * heads, gdim, h, w)
+        grid = grid.permute(0, 2, 1, 3, 4).reshape(bs * heads, len_q * p, 1, 2)
+        sampled = F.grid_sample(value, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+        return sampled.view(bs, heads, gdim, len_q, p).permute(0, 2, 3, 1, 4)  # [bs, gdim, len_q, heads, P]
 
     def _fine_logits(self, samples, query):
         """
@@ -216,9 +236,9 @@ class MSDeformableAttention(nn.Module):
         cannot tell an informative sample from a background one; the probes found a head's six
         fine points reading features only 0.61 alike yet carrying 4.6 of 6 effective points.
         """
-        bs, _, len_q, heads, p = samples.shape
+        bs, c, len_q, heads, p = samples.shape
         with torch.autocast(device_type=samples.device.type, enabled=False):
-            flat = samples.float().permute(0, 3, 2, 4, 1).reshape(bs, heads, len_q * p, self.fine_dim)
+            flat = samples.float().permute(0, 3, 2, 4, 1).reshape(bs, heads, len_q * p, c)
             keys = torch.matmul(flat, self.fine_key).view(bs, heads, len_q, p, self.head_dim)
         q = self.fine_query(query).view(bs, len_q, heads, 1, self.head_dim).transpose(1, 2)
         logits = (keys.to(q.dtype) * q).sum(-1) * self.head_dim**-0.5  # [bs, heads, len_q, p]

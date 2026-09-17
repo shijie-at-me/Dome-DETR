@@ -146,6 +146,7 @@ class TransformerDecoderLayer(nn.Module):
         min_sample_cells=0.0,
         fine_dim=0,
         fine_key_aware=False,
+        fine_groups=1,
         null_point=False,
     ):
         super().__init__()
@@ -168,6 +169,7 @@ class TransformerDecoderLayer(nn.Module):
             min_sample_cells=min_sample_cells,
             fine_dim=fine_dim,
             fine_key_aware=fine_key_aware,
+            fine_groups=fine_groups,
             null_point=null_point,
         )
         self.dropout2 = nn.Dropout(dropout)
