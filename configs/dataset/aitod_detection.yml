@@ -3,11 +3,15 @@ task: detection
 # AI-TOD-v2, read from https://huggingface.co/datasets/shijli/aitod-v2
 # (official v2 annotations; the AI-TOD protocol trains on train + validation and reports on test)
 #
-# The tiles are 800x800 already and stay so: the resize only acts on the zoomed-in crops of
-# RandomIoUCrop (a 30% to 100% region scaled up to 800x800: the augmentation the tiny objects
-# profit from), as in the original recipe.
-# No zoom-out, mosaic or mix-up, which shrink them. Orthogonal aerial imagery: every orientation
-# is as natural as any other, so both flips and the 90-degree rotations are free data.
+# The tiles are 800x800 already and stay so: the resize acts on RandomIoUCrop's zoomed-in crops
+# (a 30% to 100% region scaled up to 800x800) and on RandomZoomOut's shrunken ones, as in the
+# original recipe. Zoom-out was dropped here once, on the reasoning that it shrinks objects that
+# are minute to begin with; against the legacy Dome run that reasoning loses, and it loses
+# exactly where zoom-out acts: APvt 15.4 against 17.7 and ARvt 24.2 against 29.7, while medium
+# objects are ahead. Under 8 px is the scarcest bucket in the split and zoom-out is what fills
+# it. Mosaic and mix-up stay out.
+# Orthogonal aerial imagery: every orientation is as natural as any other, so both flips and the
+# 90-degree rotations are free data, and they stay (the legacy recipe has neither).
 
 evaluator:
   type: AITODEvaluator
@@ -23,6 +27,7 @@ train_dataloader:
     transforms:
       type: Compose
       ops:
+        - {type: RandomZoomOut, fill: 0}
         - {type: RandomIoUCrop, p: 0.8}
         - {type: SanitizeBoundingBoxes, min_size: 1}
         - {type: RandomHorizontalFlip}
@@ -40,7 +45,7 @@ train_dataloader:
         # from this epoch on the listed augmentations are switched off (the flips and rotations stay)
         name: stop_epoch
         epoch: 72
-        ops: ['RandomPhotometricDistort', 'RandomIoUCrop']
+        ops: ['RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
   shuffle: True
   num_workers: 4
 
