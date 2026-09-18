@@ -49,6 +49,20 @@ declare -A CONFIGS=(
     # baseline's fixed 300 queries, which settles fine_blocks for row 3
     [abl_aitod_2_fine]=configs/dome/ablation/DFine-S-AITOD-2-fine.yml
     [abl_aitod_2b_fine_light]=configs/dome/ablation/DFine-S-AITOD-2b-fine-light.yml
+    # ladder v2 (2026-09-15): row 1b, the baseline with the stride-4 fusion block light, prices the ELAN alone
+    [abl_aitod_1b_fusion_light]=configs/dome/ablation/DFine-S-AITOD-1b-fusion-light.yml
+    # fine-level design: the fine map widened to 256 and split 8 ways, one group per head, on the ELAN baseline
+    [abl_aitod_fine_grouped]=configs/dome/ablation/DFine-S-AITOD-fine-grouped.yml
+    # fine-level design rows (2026-09-16): fine+key (validated levers), and +min_cells as its own ablation
+    [abl_aitod_fine_key]=configs/dome/ablation/DFine-S-AITOD-fine-key.yml
+    [abl_aitod_fine_key_mincells]=configs/dome/ablation/DFine-S-AITOD-fine-key-mincells.yml
+    [abl_aitod_fine_dq]=configs/dome/ablation/DFine-S-AITOD-fine-dq.yml
+    # our method (2026-09-17): fine + dynamic query + repsep stride-4 fusion + objectness enc target,
+    # and the same + Rank & Sort loss (the expected headline row)
+    [abl_aitod_ours]=configs/dome/ablation/DFine-S-AITOD-ours.yml
+    [abl_aitod_ours_rank]=configs/dome/ablation/DFine-S-AITOD-ours-rank.yml
+    # obj=1 isolation: ours (obj) vs ours-vfl (same, encoder kept on VFL); their difference is obj=1 alone
+    [abl_aitod_ours_vfl]=configs/dome/ablation/DFine-S-AITOD-ours-vfl.yml
 )
 BASELINES=(dfine_s_visdrone dfine_m_visdrone dfine_l_visdrone dfine_s_aitod dfine_m_aitod dfine_l_aitod)
 OURS=(ours_s_visdrone ours_m_visdrone ours_l_visdrone ours_s_aitod ours_m_aitod ours_l_aitod)
