@@ -9,13 +9,13 @@ and ``DomePostProcessor`` turns its outputs into detections. Importing the packa
 all of them for the configs.
 """
 
+from ...solver.matcher import HungarianMatcher
 from .dfine_decoder import DFINETransformer
 from .dome import DOME
 from .dome_criterion import DomeCriterion
 from .dome_decoder import DomeTransformer
 from .dome_encoder import DomeHybridEncoder
 from .hybrid_encoder import HybridEncoder
-from .matcher import HungarianMatcher
 from .postprocessor import DomePostProcessor
 
 __all__ = [

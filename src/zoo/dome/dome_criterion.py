@@ -23,8 +23,8 @@ from ...misc.box_ops import (
     elementwise_generalized_box_iou,
     gaussian_box_similarity,
 )
+from ...solver.matcher import FlatMatches, PaddedTargets, padded_targets, topk_matching_flat
 from .fdr import bbox2distance
-from .matcher import FlatMatches, PaddedTargets, padded_targets, topk_matching_flat
 from .rank_sort import rank_sort_loss
 
 __all__ = ["DomeCriterion"]

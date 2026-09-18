@@ -15,8 +15,8 @@ from scipy.optimize import linear_sum_assignment
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
-from ...core import register
-from ...misc.box_ops import box_cxcywh_to_xyxy, elementwise_generalized_box_iou, gaussian_box_similarity
+from ..core import register
+from ..misc.box_ops import box_cxcywh_to_xyxy, elementwise_generalized_box_iou, gaussian_box_similarity
 
 __all__ = ["FlatMatches", "HungarianMatcher", "PaddedTargets", "padded_targets", "topk_matching", "topk_matching_flat"]
 
