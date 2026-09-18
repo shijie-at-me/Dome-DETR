@@ -708,6 +708,13 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", help="output directory (default <run>/attention)")
+    parser.add_argument(
+        "--min-sample-cells",
+        type=float,
+        default=None,
+        help="override every cross-attention layer's min_sample_cells (an inference-time geometric floor); "
+        "with the model's trained value use it to isolate whether the floor spreads points out of one cell",
+    )
     args = parser.parse_args()
 
     out_dir = args.out or os.path.join(args.run, "attention")
@@ -718,6 +725,10 @@ def main():
     cfg = YAMLConfig(os.path.join(args.run, "config.yml"))
     model = load_model(cfg, checkpoint, args.device)
     decoder = find_decoder(model)
+    if args.min_sample_cells is not None:
+        for layer in decoder.layers:
+            layer.cross_attn.min_sample_cells = args.min_sample_cells
+        print(f"override: min_sample_cells set to {args.min_sample_cells} on every layer")
     strides = list(model.decoder.feat_strides)
     if getattr(model.decoder, "fine_channels", 0) > 0:  # the fine level, one stride finer, is the first value level
         strides = [strides[0] // 2, *strides]

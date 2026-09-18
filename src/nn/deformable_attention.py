@@ -126,6 +126,9 @@ class MSDeformableAttention(nn.Module):
         self.offset_scale = offset_scale
         self.min_sample_cells = min_sample_cells
         self.null_point = null_point
+        self.edit_weights = (
+            None  # a probe's hook on the softmaxed weights [bs, len_q, heads, P (+1)] (level_ablation.py)
+        )
 
         if isinstance(num_points, list):
             assert len(num_points) == num_levels, "num_points needs one entry per level"
@@ -314,6 +317,8 @@ class MSDeformableAttention(nn.Module):
                 logits = torch.cat([logits[..., :p] + self._fine_logits(samples, query), logits[..., p:]], dim=-1)
 
         attention_weights = F.softmax(logits, dim=-1)  # over the head's points, and its null entry
+        if self.edit_weights is not None:  # a probe's edit of the weights (tools/analysis/level_ablation.py)
+            attention_weights = self.edit_weights(attention_weights)
         null_weight = None
         if self.null_point:
             attention_weights, null_weight = attention_weights[..., :-1], attention_weights[..., -1:]
