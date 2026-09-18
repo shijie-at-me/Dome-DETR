@@ -1,0 +1,19 @@
+# Ladder row 1b: the S AI-TOD baseline (row 1: 500 queries, 160 epochs) with the pyramid's
+# stride-4 fusion block, a RepNCSPELAN4, replaced by the depthwise separable convolution of
+# EfficientDet's BiFPN (a depthwise 3x3, a pointwise 1x1 to 256 channels, BN, SiLU), the block as
+# published, unmodified. Nothing else changes: the stride-8 and stride-16 fusions, the bottom-up
+# path, the decoder and the losses are the row-1 ones. The difference to row 1 prices that one
+# block, 49 of the model's 115 GFLOPs at 800x800 (this row: about 77), the single largest item of
+# the model and six times the backbone; D-FINE's own roadmap found the GELAN width no precision
+# lever on COCO (halved, it matched the CSP layers it replaced), but its stride-4 instance on tiny
+# objects has never been measured. The saved FLOPs are the budget the fine level's wider forms
+# (F3) are paid from.
+
+__include__: ['../DFine-S-AITOD.yml']
+
+output_dir: ./outputs/ablation/aitod_s_1b_fusion_light
+
+epoches: 160
+
+HybridEncoder:
+  fine_fusion: separable

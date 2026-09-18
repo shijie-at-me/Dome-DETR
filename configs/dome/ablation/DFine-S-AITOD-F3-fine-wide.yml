@@ -1,0 +1,15 @@
+# Fine study 2, row F3: F2 with the fine level widened to 128 channels and 4 depthwise blocks, the
+# iso-FLOPs row: the stride-4 fusion's savings spent on the fine level. About 105 GFLOPs at
+# 800x800 (128 channels +10, two more blocks +3 on F2's 87), still under the baseline's 115. The
+# blocks were worth 0.2 AP at 64 channels (aitod_s_2_fine 31.7 vs 2b light 31.5, 160 epochs).
+
+__include__: ['./DFine-S-AITOD-F2-fusion-light.yml']
+
+output_dir: ./outputs/ablation/aitod_s_f3_fine_wide
+
+HybridEncoder:
+  fine_dim: 128
+  fine_blocks: 4
+
+DFINETransformer:
+  fine_channels: 128

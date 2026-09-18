@@ -1,0 +1,34 @@
+# Our full method (no ranking loss): the stride-2 fine level + dynamic query + a repsep stride-4
+# fusion + a plain-objectness encoder target. Built on fine + dynamic query (DFine-S-AITOD-fine-dq,
+# which is itself the fine level with our density-adaptive query budget and no key-aware), with two
+# further changes:
+#
+#   1. fine_fusion: repsep. The pyramid's stride-4 fusion block, a RepNCSPELAN4 (49 of the model's
+#      115 GFLOPs at 800x800, its single largest block), is replaced by a reparameterized
+#      depthwise-separable block: at train time a multi-branch 5x5 / 3x3 / identity stack with
+#      pointwise mixing, folded at inference into one 5x5 depthwise separable conv (cheap). It is
+#      the "smart light" form of the 1b/separable budget swap: it frees most of the ELAN's FLOPs to
+#      fund the fine level while keeping train-time capacity on the stride-4 map.
+#
+#   2. enc_losses: [obj, boxes]. The encoder's query-selection head is trained as plain 0/1
+#      objectness (enc_obj_target=one, enc_obj_loss=plain, both defaults) instead of the VFL
+#      IoU-soft target the decoder keeps. The box regression is unchanged. Rationale: tiny boxes
+#      carry low IoU even when roughly right, so an IoU-soft encoder target down-weights hard tiny
+#      positives; a hard objectness target gives the query selection (and the dynamic-query count,
+#      which reads these scores) a cleaner "is there an object" signal. count_threshold stays 0.15
+#      for now, though the objectness score distribution may later want it retuned.
+#
+# ELAN priced separately by rows 1 / 1b; fine and dynamic query isolated by fine / fine-dq. 500
+# queries, 160 epochs. The ranking axis is added on top in DFine-S-AITOD-ours-rank.yml.
+
+__include__: ['./DFine-S-AITOD-fine-dq.yml']
+
+output_dir: ./outputs/ablation/aitod_s_ours
+
+HybridEncoder:
+  fine_fusion: repsep
+  fine_fusion_hidden: 256
+  fine_fusion_depth: 2
+
+DomeCriterion:
+  enc_losses: [obj, boxes]   # encoder query selection trained as 0/1 objectness (target=1), box regression unchanged

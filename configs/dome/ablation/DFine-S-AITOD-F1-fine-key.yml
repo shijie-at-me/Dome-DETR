@@ -1,0 +1,16 @@
+# Fine study 2, row F1: the fine level alone (DFine-S-AITOD-2-fine) plus fine_key_aware, so the
+# study of the level's own design stacks on the level and nothing else (row 6 of the ladder puts
+# the key on top of the budget, the quality target and the sampling floor).
+#
+# Why the weights before the points: the level ablation of aitod_s_2_fine (probe/level_ablation.md)
+# keeps 31.4 of 31.7 AP with every head's 3 best fine points of 6 (top-1: 30.3), so half the points
+# are redundant, while the attention probe has them reading features only 0.61 alike: the points see
+# different things and the weights, predicted from the query alone, cannot tell which matter.
+# Cost: +0.5 GFLOPs at 800x800 (120.1 -> 120.6), no map computation.
+
+__include__: ['./DFine-S-AITOD-2-fine.yml']
+
+output_dir: ./outputs/ablation/aitod_s_f1_fine_key
+
+DFINETransformer:
+  fine_key_aware: True

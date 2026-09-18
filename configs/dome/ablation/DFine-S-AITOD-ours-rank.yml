@@ -1,0 +1,14 @@
+# Ablation 2: our full method + the Rank & Sort loss. Adds the ranking axis (loss_rank, rank_sort.py,
+# already implemented) on top of DFine-S-AITOD-ours (fine + dynamic query + repsep fusion +
+# objectness encoder target). Rank & Sort optimizes TP-above-FP and score-by-IoU ordering on the
+# decoder's last-layer scores (and the encoder's), attacking the ranking headroom the AP
+# decomposition found the largest single lever on AI-TOD (ordering +6.5, score-IoU order +5.9,
+# and the AP75 collapse it drives). This is expected to be the headline configuration; ours.yml is
+# the same model with ranking off, so the pair reads off Rank & Sort's contribution.
+
+__include__: ['./DFine-S-AITOD-ours.yml']
+
+output_dir: ./outputs/ablation/aitod_s_ours_rank
+
+DomeCriterion:
+  losses: [vfl, boxes, local, rank]

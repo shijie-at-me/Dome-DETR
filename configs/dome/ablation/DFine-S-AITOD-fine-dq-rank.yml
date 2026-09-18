@@ -1,0 +1,11 @@
+# fine + dynamic query + Rank & Sort loss. Adds the ranking axis (loss_rank, already implemented,
+# rank_sort.py) on top of fine + dynamic query. Rank & Sort optimizes TP-above-FP and score-by-IoU
+# ordering on the decoder's last-layer scores (and the encoder's), attacking the +12.4 AP ranking
+# headroom the AP decomposition found (and the AP75 collapse via score-IoU alignment). No key-aware.
+
+__include__: ['./DFine-S-AITOD-fine-dq.yml']
+
+output_dir: ./outputs/ablation/aitod_s_fine_dq_rank
+
+DomeCriterion:
+  losses: [vfl, boxes, local, rank]

@@ -1,0 +1,42 @@
+# The fine level grafted onto the S AI-TOD baseline's stage-1 checkpoint and trained through the
+# baseline's stage 2 only: does the fine level need its own 120 stage-1 epochs, or can every switch
+# start from one shared baseline? Compared with outputs/ablation/aitod_s_2_fine (the fine level
+# from scratch, 160 epochs, 300 queries, the 2026-09-13 recipe), so this row keeps that recipe:
+# 160 epochs, 300 queries, the second decay already applied (the rates are the recipe's times
+# 0.8^2, with no milestone left), no warmup (the run resumes at epoch 119), no stage-2 reload.
+#
+#   python tools/checkpoint/graft.py -c configs/dome/ablation/DFine-S-AITOD-2-fine-from120.yml \
+#       --source outputs/dfine_s_aitod/2026-09-13_01-47-31/checkpoint0119.pth \
+#       -o outputs/ablation/aitod_s_2_fine_from120/<stamp>/best_stg1.pth
+#   python train.py -c configs/dome/ablation/DFine-S-AITOD-2-fine-from120.yml \
+#       -r outputs/ablation/aitod_s_2_fine_from120/<stamp>/best_stg1.pth --use-amp --seed 0
+
+__include__: ['./DFine-S-AITOD-2-fine.yml']
+
+output_dir: ./outputs/ablation/aitod_s_2_fine_from120
+
+epoches: 160
+patience: 0
+
+DFINETransformer:
+  num_queries: 300
+
+optimizer:
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*(?:norm|bn)).*$'
+      lr: 0.0000128
+    -
+      params: '^(?=.*backbone)(?=.*(?:norm|bn)).*$'
+      lr: 0.0000128
+      weight_decay: 0.
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
+      weight_decay: 0.
+  lr: 0.000128
+
+lr_scheduler:
+  milestones: []
+
+lr_warmup_scheduler:
+  warmup_duration: 1

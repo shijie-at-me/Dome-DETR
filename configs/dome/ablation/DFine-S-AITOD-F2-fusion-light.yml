@@ -1,0 +1,12 @@
+# Fine study 2, row F2: F1 with the pyramid's stride-4 fusion block replaced by BiFPN's separable
+# convolution (fine_fusion separable, as row 1b). The budget row: the stride-4 RepNCSPELAN4 is 49 GFLOPs of the model's 120
+# at 800x800 (F1 120.6 -> 82.3, 28% under the D-FINE-S baseline's 114.9), and this row says what
+# those FLOPs buy in AP with the fine level present (row 1b prices them without it). Whatever they
+# are worth, the fine level can then be widened inside the baseline's budget (row F3, 104).
+
+__include__: ['./DFine-S-AITOD-F1-fine-key.yml']
+
+output_dir: ./outputs/ablation/aitod_s_f2_fusion_light
+
+HybridEncoder:
+  fine_fusion: separable

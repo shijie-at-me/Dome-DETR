@@ -1,0 +1,26 @@
+# Fine level + key-aware, on the ELAN baseline: the stride-2 fine level (64 ch shared map, 6
+# points) plus fine_key_aware (the fine weights read what they sampled). Both are the strongly
+# probe-validated levers (2026-09-16): the fine sample's content predicts foreground at AUC 0.71
+# while the query-only weight sits at 0.36, so the content signal is there and unused. No
+# min_sample_cells here (that is a separate row, DFine-S-AITOD-fine-key-mincells): min_sample_cells
+# is a soft, defeatable floor whose value on top of the fine level's real resolution is unproven,
+# so it is isolated. ELAN kept, 500 queries, 160 epochs. ~120.6 GFLOPs.
+
+__include__: ['../DFine-S-AITOD.yml']
+
+output_dir: ./outputs/ablation/aitod_s_fine_key
+
+epoches: 160
+
+HGNetv2:
+  return_stem: True
+
+HybridEncoder:
+  fine_in_channels: 32
+  fine_dim: 64
+  fine_blocks: 2
+
+DFINETransformer:
+  fine_channels: 64
+  num_points: [6, 6, 4, 4, 4]
+  fine_key_aware: True

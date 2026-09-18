@@ -1,0 +1,26 @@
+# fine level + our dynamic query, on the ELAN baseline. Tests what the density-adaptive query
+# budget adds on top of the fine level (the proven +0.9 module). No key-aware (its intended
+# mechanism did not materialize on AI-TOD: the 2026-09-16 probe found the fine weights no more
+# foreground-selective with it, AUC 0.492 either way), so this isolates fine + dynamic query.
+#
+# Dynamic query: query_budget threshold (encoder token count above 0.15, rounded to 100, clamped
+# [300, 1500]); no counting head (a trained head sent 93% of tiles to the wrong bucket). Training
+# uses the larger of the encoder count and the GT count. count_range floored at 300 (the user's
+# 2026-09-16 scheme: 300 for the sparse majority, scaling to 1500 for the densest), the finer
+# low-end edges start at 100. group_by_count batches by object count so a batch pads nothing.
+
+__include__: ['./DFine-S-AITOD-fine-key.yml']
+
+output_dir: ./outputs/ablation/aitod_s_fine_dq
+
+DFINETransformer:
+  fine_key_aware: False   # off: isolate fine + dynamic query (key-aware did not help on AI-TOD)
+  query_budget: threshold
+  count_threshold: 0.15
+  count_margin: 200   # +200 offset: count 0-100 -> 300 Q, 101-200 -> 400, ... (user 2026-09-16)
+  count_round: 100
+  count_range: [300, 1500]
+  count_train_budget: max
+
+train_dataloader:
+  group_by_count: {edges: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300]}

@@ -1,0 +1,13 @@
+# Ablation: fine + key (DFine-S-AITOD-fine-key) plus min_sample_cells 1. Against the fine-key row
+# it isolates whether the sampling-radius floor still buys anything once the fine level already
+# supplies stride-2 resolution. min_sample_cells is a soft floor the network can partly defeat by
+# learning small offsets (the 2026-09-16 probe: on the trained model the floor cuts coarse-level
+# collapse, stride 32 tiny 40% -> 0%, stride 16 64% -> 33%, but 33% remains), so its marginal AP
+# on top of the fine level is the open question this row answers.
+
+__include__: ['./DFine-S-AITOD-fine-key.yml']
+
+output_dir: ./outputs/ablation/aitod_s_fine_key_mincells
+
+DFINETransformer:
+  min_sample_cells: 1

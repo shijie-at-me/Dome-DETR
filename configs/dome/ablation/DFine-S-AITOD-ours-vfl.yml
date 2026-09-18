@@ -1,0 +1,19 @@
+# Ablation control for the objectness encoder target: our method with the encoder kept on the VFL
+# (IoU-soft) classification target instead of plain 0/1 objectness. Identical to DFine-S-AITOD-ours
+# (fine level + dynamic query + repsep stride-4 fusion) in every other respect; it simply does not
+# set enc_losses, so the encoder uses the default losses ['vfl', 'boxes', 'local'] like the decoder.
+#
+# The pair ours (obj=1) vs ours-vfl (this) isolates the encoder target change alone: same fine +
+# dynamic query + repsep, so the AP difference is purely obj=1 vs VFL. Hypothesis under test: a hard
+# objectness target helps tiny-object recall in the query selection (tiny boxes carry low IoU, so a
+# VFL encoder down-weights hard tiny positives), at no cost to the decoder's score-IoU alignment
+# (the decoder keeps VFL either way).
+
+__include__: ['./DFine-S-AITOD-fine-dq.yml']
+
+output_dir: ./outputs/ablation/aitod_s_ours_vfl
+
+HybridEncoder:
+  fine_fusion: repsep
+  fine_fusion_hidden: 256
+  fine_fusion_depth: 2
